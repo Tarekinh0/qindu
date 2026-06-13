@@ -22,7 +22,7 @@ C'est la fondation sur laquelle tout le reste (PII, tokenisation, vault, réhydr
 3. **DomainRouter** : route `MITM` pour les domaines IA configurés, `Tunnel` pour tout le reste
 4. **Tunnel aveugle** : `io.Copy` sans décryptage pour les domaines non-IA
 5. **MITM TLS** :
-   - Génération CA racine ECDSA P-256 (en mémoire pour les tests, sur disque chiffré DPAPI pour la prod)
+   - Génération CA racine ECDSA P-256, stockée sur disque chiffré DPAPI (`%PROGRAMDATA%\Qindu\ca.key`, chiffrée) dès QINDU-0001. En CI/tests Linux, la CA est en mémoire uniquement (DPAPI non disponible). La clé n'est jamais loggée.
    - Génération lazy de certificats feuilles (SAN: domaine + wildcard)
    - Cache mémoire `map[string]*tls.Certificate` avec `sync.RWMutex`
    - Validation upstream via trust store Windows (`x509.SystemCertPool`)
