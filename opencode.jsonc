@@ -42,7 +42,8 @@
           "README.md": "allow",
           "CONTRIBUTING.md": "allow",
           "LICENSE": "allow",
-          "docs/decisions/**": "allow"
+          "docs/decisions/**": "allow",
+          "opencode.jsonc" : "ask"
         },
         "bash": {
           "*": "ask",
@@ -60,9 +61,15 @@
           "qindu-ciso": "allow",
           "qindu-devsecops": "allow",
           "qindu-qa": "allow",
-          "qindu-release": "allow"
+          "qindu-release": "allow",
+          "qindu-peer-reviewer": "allow"
         }
       }
+    },
+    "qindu-peer-reviewer": {
+      "description": "Senior Go dev : revue de code impitoyable contre Clean Code, SOLID, Go Proverbs, Pragmatic Programmer. Note la maintenabilité et détecte les bugs.",
+      "mode": "subagent",
+      "temperature": 0.1
     }
   }
 }

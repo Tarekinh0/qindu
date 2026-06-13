@@ -33,6 +33,7 @@ Qindu uses a strict multi-agent governance model to ensure security, privacy, an
 - **qindu-devsecops**: Implementer. Writes Go code, tests, and CI/CD workflows. Cannot modify ADRs.
 - **qindu-qa**: Reviewer. Verifies tests, PII detection accuracy, edge cases, and quality. Cannot modify code.
 - **qindu-release**: Reviewer. Verifies CI/CD, MSI packaging, code signing, and supply chain security. Cannot modify code.
+- **qindu-peer-reviewer**: Senior Go dev. Merciless code review against Clean Code, SOLID, Go Proverbs, Pragmatic Programmer, DDD, Effective Go, Code Complete. Produces structured scorecards with blocking bugs, design flaws, and maintainability grades. Invoked after DevSecOps delivers `dev-notes.md`, before CISO/DPO review gates. Cannot modify code.
 
 ### Strict Sequential Workflow
 
@@ -44,13 +45,14 @@ The workflow is strictly sequential and file-based within the sprint folder (`do
    - `qindu-ciso` writes `ciso-requirements.md`.
    - *If blocked, the sprint stops and `qindu-orchestrator` arbitrates.*
 3. **Implementation**: `qindu-devsecops` implements the story (code, tests) and writes `dev-notes.md` (factual, technical).
-4. **Review**:
+4. **Peer Review**: `qindu-peer-reviewer` reviews the implementation against Clean Code, SOLID, Go Proverbs, and other design standards. Produces `peer-review.md` with scorecard, critical findings, and verdict. If REJECT or FIX_AND_RESUBMIT with critical bugs, the sprint returns to step 3 for fixes.
+5. **Review**:
    - `qindu-ciso` verifies the implementation and writes `ciso-review.md`.
    - `qindu-dpo` verifies the implementation and writes `dpo-review.md`.
-5. **Validation**:
+6. **Validation**:
    - `qindu-qa` verifies tests, PII accuracy, and edge cases, then writes `qa-review.md`.
    - `qindu-release` verifies CI/CD and supply chain, then writes `release-review.md`.
-6. **Closure**: `qindu-orchestrator` reviews all artifacts, resolves any remaining conflicts, and produces `closure.md` with the final verdict.
+7. **Closure**: `qindu-orchestrator` reviews all artifacts, resolves any remaining conflicts, and produces `closure.md` with the final verdict.
 
 ### Commands
 - `/qindu-sprint`: Starts a full sprint cycle.

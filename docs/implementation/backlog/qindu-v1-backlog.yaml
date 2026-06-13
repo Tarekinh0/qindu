@@ -11,15 +11,20 @@ items:
 
 - id: QINDU-0001
   title: "Proxy TLS local sélectif - Fondation"
-  status: DRAFT
+  status: DONE
   adr_ref: [ADR-001, ADR-002, ADR-003, ADR-004, ADR-005, ADR-006, ADR-007, ADR-008, ADR-009, ADR-010]
   domains: [proxy, tls, policy, logging, service]
   dependencies: []
-  gates_required: [DPO, CISO, QA]
+  gates_required: [DPO, CISO, QA, Release]
   human_inputs_required: []
   forbidden: [PII detection, tokenization, vault, rehydration, installer]
   acceptance_evidence: "Le proxy démarre en mode console, accepte les CONNECT, fait du MITM sur les domaines IA configurés, tunnel les autres, sert /proxy.pac et /health, logge en JSON sans PII, graceful shutdown 30s."
   notes: "Fondation squelette de tout le projet. Interceptor NoOp. Tests testcontainers-go."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0001/"
+  closure_date: "2026-06-13"
+  go_version: "1.26"
+  test_count: 122
+  bugs_fixed: 13
 
 - id: QINDU-0002
   title: "Installer Windows + Service"
