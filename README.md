@@ -1,138 +1,155 @@
 # Qindu — AI Privacy Proxy
 
-> **Use web AI without sending PII in clear text to the model.**
+> **Use ChatGPT, Claude, and Gemini without sending personal data in clear text.**
 
-Qindu is a local proxy for Windows that sits between your browser and web AI services (ChatGPT, Claude, Gemini). It detects PII (emails, phone numbers, credit cards, etc.) before it leaves your machine, replaces it with tokens, and rehydrates AI responses locally. No browser extension needed.
-
-⚠️ **Pre-implementation.** Sprint QINDU-0001 (proxy foundation) in progress. Zero code yet.
+Qindu is a local proxy for Windows that sits between your browser and web AI services. It detects PII (names, emails, phone numbers, IBANs, credit cards, API keys) before anything leaves your machine, replaces it with tokens, and rehydrates the AI response locally. No browser extension. No account. No telemetry.
 
 ---
 
-## What Qindu does
+## How it works
 
 ```
 REQUEST (browser → AI)
 
   "Summarize this ticket from Jane Doe (jane@example.com):
-   Payment of 423€ to IBAN FR76 3000 1007 9400 1234 5678 901 is stuck."
+   Payment to IBAN FR76 3000 1007 9400 1234 5678 901 is stuck."
                  │
                  ▼
-  ┌──────────────────────────────────────┐
-  │            QINDU PROXY                │
-  │                                       │
-  │  1. PII engine detects:               │
-  │     Jane Doe              → PERSON    │
-  │     jane@example.com      → EMAIL     │
-  │     FR76 3000...          → IBAN      │
-  │                                       │
-  │  2. Tokenizer replaces them:          │
-  │     → <<PII_PERSON_0001>>             │
-  │     → <<PII_EMAIL_0002>>              │
-  │     → <<PII_IBAN_0003>>               │
-  │                                       │
-  │  3. Vault stores mapping (encrypted):  │
-  │     <<PII_PERSON_0001>> → Jane Doe    │
-  │     <<PII_EMAIL_0002>>  → jane@ex…    │
-  │     <<PII_IBAN_0003>>   → FR76 3000…  │
-  └──────────────────────────────────────┘
+  ┌──────────────────────────────────────────┐
+  │              QINDU PROXY                  │
+  │                                           │
+  │  1. PII engine detects:                   │
+  │     Jane Doe              → PERSON        │
+  │     jane@example.com      → EMAIL         │
+  │     FR76 3000...          → IBAN          │
+  │                                           │
+  │  2. Tokenizer replaces:                   │
+  │     → <<PII_PERSON_0001>>                 │
+  │     → <<PII_EMAIL_0002>>                  │
+  │     → <<PII_IBAN_0003>>                   │
+  │                                           │
+  │  3. Vault stores mapping (DPAPI-encrypted)│
+  │     <<PII_PERSON_0001>> → Jane Doe        │
+  │     <<PII_EMAIL_0002>>  → jane@ex…        │
+  │     <<PII_IBAN_0003>>   → FR76 3000…      │
+  └──────────────────────────────────────────┘
                  │
                  ▼
   "Summarize this ticket from <<PII_PERSON_0001>>
-   (<<PII_EMAIL_0002>>): Payment of 423€ to IBAN
+   (<<PII_EMAIL_0002>>): Payment to IBAN
    <<PII_IBAN_0003>> is stuck."
                  │
                  ▼
-  ┌──────────────────────────────────────┐
-  │            AI SERVICE                 │
-  │  The model analyzes the ticket text.  │
-  │  It never sees the real name, email,  │
-  │  or bank account.                     │
-  └──────────────────────────────────────┘
+  ┌──────────────────────────────────────────┐
+  │             AI SERVICE                    │
+  │  The model sees tokens, never real data.  │
+  │  Prompt analysis, training, logging —     │
+  │  all happen on tokenized text only.       │
+  └──────────────────────────────────────────┘
 
 
 RESPONSE (AI → browser)
 
   "The payment from <<PII_PERSON_0001>>
    (<<PII_EMAIL_0002>>) to IBAN <<PII_IBAN_0003>>
-   appears to be pending due to a processing delay.
-   No action needed from <<PII_PERSON_0001>>."
+   appears to be pending. No action needed from
+   <<PII_PERSON_0001>>."
                  │
                  ▼
-  ┌──────────────────────────────────────┐
-  │            QINDU PROXY                │
-  │                                       │
-  │  4. Rehydrator looks up each token:   │
-  │     → Jane Doe                        │
-  │     → jane@example.com                │
-  │     → FR76 3000 1007 9400 1234 5678…  │
-  └──────────────────────────────────────┘
+  ┌──────────────────────────────────────────┐
+  │              QINDU PROXY                  │
+  │                                           │
+  │  4. Rehydrator looks up each token:       │
+  │     → Jane Doe                            │
+  │     → jane@example.com                    │
+  │     → FR76 3000 1007 9400 1234 5678 901   │
+  └──────────────────────────────────────────┘
                  │
                  ▼
   "The payment from Jane Doe
    (jane@example.com) to IBAN FR76 3000 1007
-   9400 1234 5678 901 appears to be pending due
-   to a processing delay. No action needed from
-   Jane Doe."
+   9400 1234 5678 901 appears to be pending.
+   No action needed from Jane Doe."
 ```
 
 ---
 
-## What Qindu does NOT touch
+## What Qindu intercepts — and what it doesn't
 
 ```
-  Browser ──▶ banking, health, SSO, mail, anything non-AI ──▶ DIRECT (no proxy)
-  Browser ──▶ chatgpt.com, claude.ai                         ──▶ QINDU (MITM)
+Browser ──▶ bank, health, SSO, email, anything non-AI ──▶ DIRECT (blind tunnel)
+Browser ──▶ chatgpt.com, claude.ai, gemini.google.com    ──▶ QINDU (MITM + PII protection)
 ```
 
-Only AI domains pass through the proxy. Everything else is tunneled without decryption — Qindu never sees your bank credentials, health data, or personal email.
+Qindu only decrypts traffic to AI providers. Every other domain passes through as a blind TCP tunnel — Qindu never sees your banking credentials, health data, or personal email. The proxy binds to `127.0.0.1` only, so nothing leaves your machine unencrypted.
 
 ---
 
-## V1 scope
+## V1 features
 
-| In | Out |
-|----|-----|
-| Windows service (Go) | Kernel drivers |
-| Chrome, Edge | Other browsers, macOS, Linux |
-| Selective TLS MITM (ECDSA P-256) | Full traffic inspection |
-| PII detection (rules, regex, validators) | SDK, enterprise console |
-| Tokenization + streaming rehydration | Fleet management |
-| DPAPI-encrypted vault | PDF, images |
-| slog JSON logs (zero PII) | Anti-bypass EDR-grade |
-| AGPL-3.0 | Guaranteed perfect detection |
+### Core
+- **Windows 10/11** — single binary, console or Windows service
+- **Chrome, Edge** — automatic proxy configuration via PAC and browser policies
+- **Selective TLS MITM** — ECDSA P-256 CA, ephemeral leaf certificates, never persisted to disk
+- **Domain routing** — AI domains decrypted, everything else blind-tunneled
+- **MSI installer** — one-click install, CA trusted automatically, policies applied
 
-Full spec: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+### PII protection
+- **Detection engine** — regex, validators (Luhn), context-aware. Covers: email, phone, IBAN, credit card, API key, JWT. Configurable confidence threshold.
+- **Tokenization** — `<⟨PII_TYPE_ID>>` format, deterministic (same value → same token within a conversation)
+- **DPAPI-encrypted vault** — token→value mapping, scoped by provider and conversation, configurable TTL (24h / 7d / infinite)
+- **Streaming rehydration** — SSE responses rehydrated on the fly, sub-4KB sliding buffer, no added latency
+
+### Modes
+- **Monitor** — detect and log what would be tokenized, traffic passes through unmodified
+- **Enforce** — tokenize before upstream, rehydrate before browser. The AI sees only tokens.
+
+### Providers
+- **ChatGPT** (`chatgpt.com`) — conversation endpoint, streaming SSE, delta encoding v1
+- **Claude** (`claude.ai`) — conversation endpoint, streaming
+- **Gemini** (`gemini.google.com`) — conversation endpoint
+
+### Security and privacy
+- **Zero PII in logs** — structured JSON via `slog`, metadata only (host, status, duration, bytes)
+- **Graceful shutdown** — 30-second connection drain on SIGTERM or service stop
+- **CA key DPAPI-encrypted** — never in plaintext on disk
+- **No user accounts, no telemetry, no analytics, no cloud dependency**
+- **AGPL-3.0** — free for any use. Building a SaaS on top? You must publish your modifications.
 
 ---
 
-## Repo map
+## Architecture
 
 ```
-docs/
-  ARCHITECTURE.md               Full spec
-  decisions/                    ADR-001 → ADR-010
-  implementation/
-    backlog/                    qindu-v1-backlog.yaml (16 stories)
-    sprints/QINDU-0001/         Current sprint: proxy foundation
+cmd/agent/main.go              Single binary entry point
 
-cmd/agent/                      Entry point
-internal/                       proxy, tls, policy, pii, vault, tokenize, logging, service
+internal/
+  proxy/                       HTTP/S proxy (CONNECT MITM, blind tunnel, interceptor pipeline)
+  tls/                         CA, leaf certs, cert cache, trust store
+  policy/                      YAML config, domain router, PAC generator
+  pii/                         Detection engine (recognizers, validators)
+  tokenize/                    Token replacement (deterministic, reversible)
+  vault/                       DPAPI-encrypted token→value store
+  logging/                     PII-free structured JSON logging
+  service/                     Windows service handler, health endpoint
+  providers/                   Per-provider adapters (chatgpt, claude, gemini)
 ```
+
+Built in **Go** — single static binary, no runtime, native TLS/HTTP. Cryptographic operations via `crypto/rand`, `crypto/ecdsa`, `crypto/tls`. Concurrency: one goroutine per connection, `sync.RWMutex` on cert cache.
 
 ---
 
-## Development
-
-**Current sprint**: [QINDU-0001](docs/implementation/sprints/QINDU-0001/story.md) — TLS proxy (CONNECT MITM, PAC, certs, logs, graceful shutdown).
-
-**Workflow**: strict multi-agent gates (DPO → CISO → DevSecOps → CISO+DPO → QA+Release). See [`AGENTS.md`](AGENTS.md).
+## Quick start
 
 ```bash
-git clone https://github.com/Tarekinh0/qindu
-go run ./cmd/agent          # console mode
-go test ./...               # requires Docker
-go vet ./...
-GOOS=windows GOARCH=amd64 go build ./cmd/agent/
+# Build
+go build ./cmd/agent/
+
+# Run (console mode)
+./agent -config configs/default.yaml
+
+# Test
+go test -race ./...
 ```
 
 ---
