@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows/svc"
+
+	"github.com/Tarekinh0/qindu/internal/constants"
 )
 
 // serviceHandler implements the Windows service interface.
@@ -53,12 +55,12 @@ func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, s ch
 			case svc.Stop, svc.Shutdown:
 				s <- svc.Status{State: svc.StopPending}
 				h.logger.Info("service stop requested, draining connections",
-					"timeout_seconds", 30,
+					"timeout_seconds", constants.GracefulShutdownTimeout.Seconds(),
 				)
 
-				// PR-001 FIX: Trigger graceful shutdown of the HTTP server.
+				// Trigger graceful shutdown of the HTTP server.
 				// This stops accepting new connections and drains existing ones.
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), constants.GracefulShutdownTimeout)
 				defer cancel()
 
 				if err := h.server.Shutdown(ctx); err != nil {
@@ -69,7 +71,7 @@ func (h *serviceHandler) Execute(args []string, r <-chan svc.ChangeRequest, s ch
 				select {
 				case <-errCh:
 					h.logger.Info("service stopped gracefully")
-				case <-time.After(30 * time.Second):
+				case <-time.After(constants.GracefulShutdownTimeout):
 					h.logger.Error("service stop timed out after 30s")
 				}
 				return false, 0

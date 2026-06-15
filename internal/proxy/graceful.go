@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
+
+	"github.com/Tarekinh0/qindu/internal/constants"
 )
 
 // GracefulShutdownTimeout is the maximum time to wait for connections to drain.
-const GracefulShutdownTimeout = 30 * time.Second
+// Deprecated: Use constants.GracefulShutdownTimeout directly.
+const GracefulShutdownTimeout = constants.GracefulShutdownTimeout
 
 // WaitForShutdown blocks until a shutdown signal is received (SIGINT, SIGTERM),
 // then calls http.Server.Shutdown with a 30-second timeout.
