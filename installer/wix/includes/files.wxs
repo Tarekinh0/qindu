@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Include xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
     <!-- Standard Program Files directory for the agent binary and default config -->
     <DirectoryRef Id="INSTALLDIR">
@@ -31,7 +31,7 @@
 
     <!-- ProgramData directory with restricted ACL (SR-INSTALLER-8, DPO R6) -->
     <DirectoryRef Id="PROGRAMDATADIR">
-      <Component Id="ProgramDataDirComponent" Guid="*" Win64="yes">
+      <Component Id="ProgramDataDirComponent" Guid="{C18EFC3C-DEBA-49E8-94D3-CFE10EA04BB2}" Win64="yes">
         <CreateFolder>
           <!-- SYSTEM: Full Control -->
           <Permission User="NT AUTHORITY\SYSTEM" GenericAll="yes" />
@@ -53,4 +53,4 @@
       <ComponentRef Id="ProgramDataDirComponent" />
     </ComponentGroup>
   </Fragment>
-</Wix>
+</Include>

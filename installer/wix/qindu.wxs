@@ -1,27 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
 
   <!-- ================================================================
   Qindu AI Privacy Proxy — Windows MSI Installer
 
   Build:
-    candle qindu.wxs -dProductVersion=0.1.0
+    candle qindu.wxs -dProductVersion=0.1.0 -ext WixUtilExtension -ext WixUIExtension
     light qindu.wixobj -out Qindu-Installer-x64.msi -cultures:en-us -loc locale/en-us.wxl
 
   UpgradeCode is fixed to identify Qindu across versions.
   ProductCode and PackageCode use "*" for auto-generation on each build.
   DO NOT CHANGE the UpgradeCode after the first release.
   ================================================================ -->
-
-  <!-- Include modular WiX fragments -->
-  <?include includes/files.wxs ?>
-  <?include includes/service.wxs ?>
-  <?include includes/registry-chrome.wxs ?>
-  <?include includes/registry-edge.wxs ?>
-  <?include includes/firewall.wxs ?>
-  <?include includes/ca-trust.wxs ?>
-  <?include includes/cleanup.wxs ?>
-  <?include includes/dialogs.wxs ?>
 
   <!--
   Product version: passed via -dProductVersion=X.Y.Z at build time.
@@ -88,12 +78,6 @@
       <ComponentGroupRef Id="CleanupComponents" />
     </Feature>
 
-    <!-- ================================================================
-    UI: custom dialog sequence based on WixUI_InstallDir.
-    ================================================================ -->
-    <UI Id="QinduUI">
-      <UIRef Id="WixUI_InstallDir" />
-    </UI>
 
     <!-- UNSAFE_CA and DELETEDATA as public properties (settable via
          command line: msiexec /i installer.msi UNSAFE_CA=1) -->
@@ -116,4 +100,15 @@
     <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
 
   </Product>
+
+  <!-- Include modular WiX fragments (after Product per WiX v3.14.1 strict ordering) -->
+  <?include includes/files.wxs ?>
+  <?include includes/service.wxs ?>
+  <?include includes/registry-chrome.wxs ?>
+  <?include includes/registry-edge.wxs ?>
+  <?include includes/firewall.wxs ?>
+  <?include includes/ca-trust.wxs ?>
+  <?include includes/cleanup.wxs ?>
+  <?include includes/dialogs.wxs ?>
+
 </Wix>

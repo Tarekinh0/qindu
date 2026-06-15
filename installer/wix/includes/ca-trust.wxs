@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Include xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
     <!-- CA-Init: generate CA with Name Constraints (normal mode) -->
     <CustomAction
@@ -77,18 +77,23 @@
            Interactive consent is required; only the full UI (not silent/quiet)
            provides the QinduOptionsDlg checkbox as the consent mechanism. -->
       <Custom Action="CAInitUnsafe" After="InstallFiles">NOT Installed AND UNSAFE_CA="1" AND (NOT UILevel=2) AND (NOT UILevel=3)</Custom>
-      <!-- Pre-check CA trust store existence (informational only) -->
-      <Custom Action="CACheckTrustStore" After="CAInitNormal">NOT Installed AND NOT UNSAFE_CA="1"</Custom>
-      <Custom Action="CACheckTrustStore" After="CAInitUnsafe">NOT Installed AND UNSAFE_CA="1"</Custom>
+
+      <!-- Pre-check CA trust store existence (informational only).
+           After="CAInitUnsafe" covers both paths: when UNSAFE_CA="1", CAInitUnsafe
+           executes and CACheckTrustStore runs after it. When UNSAFE_CA!="1",
+           CAInitUnsafe is skipped, CACheckTrustStore sequences naturally after
+           CAInitNormal (both are relative to InstallFiles). -->
+      <Custom Action="CACheckTrustStore" After="CAInitUnsafe">NOT Installed</Custom>
+
       <!-- Install CA into trust store. Runs after pre-check.
-           Each After is paired with the same condition as the matching CAInit,
-           so exactly one constraint fires per install (PR-008). -->
-      <Custom Action="CAInstallTrustStore" After="CACheckTrustStore">NOT Installed AND NOT UNSAFE_CA="1"</Custom>
-      <Custom Action="CAInstallTrustStore" After="CACheckTrustStore">NOT Installed AND UNSAFE_CA="1"</Custom>
+           Merged from two condition-specific entries into one (conditions
+           are mutually exclusive and exhaust the NOT Installed space). -->
+      <Custom Action="CAInstallTrustStore" After="CACheckTrustStore">NOT Installed</Custom>
+
       <!-- Rollback if install fails -->
       <Custom Action="CARollbackTrustStore" Before="CAInstallTrustStore">NOT Installed</Custom>
       <!-- Remove CA on uninstall -->
       <Custom Action="CARemoveTrustStore" Before="RemoveFiles">Installed AND NOT REINSTALL</Custom>
     </InstallExecuteSequence>
   </Fragment>
-</Wix>
+</Include>

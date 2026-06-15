@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+<Include xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <!--
   Uninstall cleanup actions.
 
@@ -25,10 +25,9 @@
   <Fragment>
     <!-- Conditional: remove ProgramData only if user opted in -->
     <DirectoryRef Id="PROGRAMDATADIR">
-      <Component Id="CleanupProgramDataDir" Guid="*" Win64="yes">
-        <RemoveFolderEx Id="CleanupProgramDataDirEx" On="uninstall" Property="PROGRAMDATADIR">
-          <Condition>DELETEDATA="1"</Condition>
-        </RemoveFolderEx>
+      <Component Id="CleanupProgramDataDir" Guid="{A0984B04-924B-4E0F-A26B-778DA94F9738}" Win64="yes">
+        <Condition>DELETEDATA="1"</Condition>
+        <util:RemoveFolderEx Id="CleanupProgramDataDirEx" On="uninstall" Property="PROGRAMDATADIR" />
       </Component>
     </DirectoryRef>
 
@@ -37,8 +36,8 @@
          ensures orphaned files (crash dumps, .tmp, user-placed files) are
          also cleaned. -->
     <DirectoryRef Id="INSTALLDIR">
-      <Component Id="CleanupInstallDir" Guid="*" Win64="yes">
-        <RemoveFolderEx Id="CleanupInstallDirEx" On="uninstall" Property="INSTALLDIR" />
+      <Component Id="CleanupInstallDir" Guid="{F35A45E9-3E62-484D-A12D-4A5513465945}" Win64="yes">
+        <util:RemoveFolderEx Id="CleanupInstallDirEx" On="uninstall" Property="INSTALLDIR" />
       </Component>
     </DirectoryRef>
   </Fragment>
@@ -49,4 +48,4 @@
       <ComponentRef Id="CleanupInstallDir" />
     </ComponentGroup>
   </Fragment>
-</Wix>
+</Include>
