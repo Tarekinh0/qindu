@@ -207,8 +207,8 @@ jobs:
       - name: Build MSI
         working-directory: installer/wix
         run: |
-          candle qindu.wxs -dProductVersion=%VERSION% -ext WixUIExtension
-          light qindu.wixobj -out Qindu-Installer-x64.msi -cultures:en-us -loc locale/en-us.wxl -ext WixUIExtension
+          candle qindu.wxs -dProductVersion=%VERSION% -ext WixUtilExtension -ext WixUIExtension
+          light qindu.wixobj -out Qindu-Installer-x64.msi -cultures:en-us -loc locale/en-us.wxl -ext WixUtilExtension -ext WixUIExtension
         shell: cmd
 
       # ─── Code Signing (Future) ─────────────────────────────────────────
