@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -64,3 +66,101 @@ jobs:
         run: |
           go fmt ./...
           git diff --exit-code || (echo "Code is not formatted. Run 'go fmt ./...' locally." && exit 1)
+
+  validate-wix:
+    name: Validate WiX Sources
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install xml utilities
+        run: sudo apt-get update && sudo apt-get install -y libxml2-utils
+
+      - name: Validate XML well-formedness
+        run: find installer/wix -name "*.wxs" -exec xmllint --noout {} \;
+
+      - name: Check include references
+        run: |
+          errors=0
+          for wxs in $(find installer/wix -name "*.wxs"); do
+            dir=$(dirname "$wxs")
+            includes=$(grep -oP '<?include\s+\K[^?]+' "$wxs" 2>/dev/null || true)
+            for inc in $includes; do
+              resolved="$dir/$inc"
+              if [ ! -f "$resolved" ]; then
+                echo "ERROR: $wxs references non-existent include: $inc (resolved: $resolved)"
+                errors=$((errors + 1))
+              fi
+            done
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "Found $errors broken include reference(s)"
+            exit 1
+          fi
+          echo "All include references valid."
+
+  build-msi:
+    name: Build MSI Installer
+    needs: [test, validate-wix]
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run go vet (Windows)
+        run: go vet ./...
+
+      - name: Run tests on Windows
+        run: go test -race -count=1 -timeout 180s ./...
+
+      - name: Build agent.exe for Windows
+        run: go build -o installer/wix/agent.exe ./cmd/agent/
+
+      - name: Copy default config
+        shell: cmd
+        run: |
+          mkdir installer\wix\configs
+          copy configs\default.yaml installer\wix\configs\default.yaml
+
+      - name: Install WiX Toolset
+        run: choco install wixtoolset --version=3.14.1 -y --no-progress
+
+      - name: Extract version from tag (strip v prefix)
+        run: |
+          $ref = "${{ github.ref_name }}"
+          if ($ref -match '^v(\d+\.\d+\.\d+)') {
+              $version = $matches[1]
+          } else {
+              $sha = "${{ github.sha }}".Substring(0, 8)
+              $version = "0.0.0-dev-$sha"
+          }
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Build MSI
+        working-directory: installer/wix
+        run: |
+          candle qindu.wxs -dProductVersion=%VERSION% -ext WixUIExtension
+          light qindu.wixobj -out Qindu-Installer-x64.msi -cultures:en-us -loc locale/en-us.wxl -ext WixUIExtension
+        shell: cmd
+
+      - name: Generate SHA256 checksum
+        working-directory: installer/wix
+        run: |
+          certutil -hashfile Qindu-Installer-x64.msi SHA256 > Qindu-Installer-x64.msi.sha256
+        shell: cmd
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Qindu-Installer-x64.msi
+          path: |
+            installer/wix/Qindu-Installer-x64.msi
+            installer/wix/Qindu-Installer-x64.msi.sha256
