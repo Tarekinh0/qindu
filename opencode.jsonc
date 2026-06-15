@@ -62,7 +62,8 @@
           "qindu-devsecops": "allow",
           "qindu-qa": "allow",
           "qindu-release": "allow",
-          "qindu-peer-reviewer": "allow"
+          "qindu-peer-reviewer": "allow",
+          "qindu-qemu-tester": "allow"
         }
       }
     },
