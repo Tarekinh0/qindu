@@ -354,3 +354,41 @@ The following peer review items (nitpicks NP-101 through NP-103) are deferred as
   - Added: `concurrency` block, cache step in `golangci-lint`, format comment in `build-msi`
   - Removed: `strategy`/`matrix` block from `test`, `gosimple` from `.golangci.yml`
   - Changed: step name and cache key references in `test` job (static `1.26` vs `${{ matrix.go-version }}`)
+
+---
+
+## 8. Hotfix — golangci-lint Go Version Mismatch (2026-06-15)
+
+**Trigger**: The `golangci-lint` CI job fails with:
+
+```
+Error: can't load config: the Go language version (go1.25) used to build golangci-lint
+is lower than the targeted Go version (1.26)
+```
+
+**Root cause**: The prebuilt golangci-lint v2.7.2 binary was compiled with Go 1.25. Our `go.mod` specifies `go 1.26`. When golangci-lint detects it was built with a Go version lower than the module's `go` directive, it refuses to analyze the code — this is a safety guard in golangci-lint's Go module compatibility check.
+
+**Fix**: Added `install-mode: goinstall` to the `golangci/golangci-lint-action` step in `.github/workflows/ci.yml` (line 45). This tells the action to build golangci-lint from source using the runner's Go 1.26 toolchain (installed by `actions/setup-go` in the same job), rather than downloading the prebuilt binary.
+
+**Change**:
+```yaml
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa  # v7
+        with:
+          version: v2.7.2
+          install-mode: goinstall   # ← added
+```
+
+**Trade-off**: Building from source adds ~30–60 seconds of CI time (one-time cost per job run) compared to the prebuilt binary download. The Go module cache (already present in the lint job since Fix Cycle 2, §7.3) mitigates this by caching golangci-lint's dependencies. This cost is acceptable because:
+1. The lint job runs in parallel with `test` — it does not block other jobs.
+2. When golangci-lint releases a v2.8+ binary built with Go 1.26, we can revert to the prebuilt binary by removing `install-mode: goinstall`.
+3. No alternative prebuilt binary exists for this version targeting Go 1.26.
+
+**Note**: This supersedes §4.3 "golangci-lint v2.7.2 and Go 1.26 Compatibility" — that section identified the risk; this hotfix resolves it.
+
+### Verification
+
+- **`go vet ./...`**: passes (no Go code changed).
+- **`go fmt ./...`**: passes (no Go code changed).
+- **YAML syntax**: unchanged structurally; only a single key-value pair added.
+- **CI behavior**: On next push/PR, the `golangci-lint` job will build golangci-lint from source with Go 1.26, resolving the version mismatch.
