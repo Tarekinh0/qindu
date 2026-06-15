@@ -1,2 +1,6 @@
 /agent
 /agent.exe
+*.har
+
+# SSH keys for Qindu VM testing
+.ssh/
