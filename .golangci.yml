@@ -1,0 +1,44 @@
+# Qindu golangci-lint configuration
+# Pragmatic, security-critical, and safety checks only.
+# No opinionated, stylistic, or non-standard linters.
+#
+# Usage: golangci-lint run ./...
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - unused
+    - ineffassign
+    - unconvert
+    - misspell
+  settings:
+    govet:
+      # Enable all govet analyzers for maximum safety coverage.
+      enable-all: true
+    errcheck:
+      # Only check function return errors (not type assertions or blank assignments).
+      check-type-assertions: false
+      check-blank: false
+    misspell:
+      locale: US
+
+formatters:
+  # No opinionated formatters — gofmt is enforced separately in CI.
+  enable: []
+
+exclusions:
+  paths:
+    - vendor
+    - testdata
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
