@@ -392,3 +392,139 @@ is lower than the targeted Go version (1.26)
 - **`go fmt ./...`**: passes (no Go code changed).
 - **YAML syntax**: unchanged structurally; only a single key-value pair added.
 - **CI behavior**: On next push/PR, the `golangci-lint` job will build golangci-lint from source with Go 1.26, resolving the version mismatch.
+
+---
+
+## 9. WiX Include Root Element Fix (2026-06-15)
+
+**Problem**: The 8 include files under `installer/wix/includes/` used `<Wix>` as their root element. WiX v3's `<?include?>` preprocessor mechanism requires included files to have `<Include>` as the root element. Using `<Wix>` causes a build error:
+
+```
+error CNDL0005: The document element must be 'Include' when processing an include file.
+```
+
+**Fix**: Changed the root element from `<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">` to `<Include xmlns="http://schemas.microsoft.com/wix/2006/wi">` and corresponding closing `</Wix>` to `</Include>` in all 8 include files:
+
+| File | Change |
+|------|--------|
+| `includes/files.wxs` | `<Wix>` → `<Include>` |
+| `includes/service.wxs` | `<Wix>` → `<Include>` |
+| `includes/registry-chrome.wxs` | `<Wix>` → `<Include>` |
+| `includes/registry-edge.wxs` | `<Wix>` → `<Include>` |
+| `includes/firewall.wxs` | `<Wix>` → `<Include>` |
+| `includes/ca-trust.wxs` | `<Wix>` → `<Include>` |
+| `includes/cleanup.wxs` | `<Wix>` → `<Include>` |
+| `includes/dialogs.wxs` | `<Wix>` → `<Include>` |
+
+The namespace URI (`http://schemas.microsoft.com/wix/2006/wi`) is preserved unchanged — only the element name differs. This is the correct namespace for all WiX v3 elements inside an `<Include>` fragment.
+
+**Candle extensions**: Updated the build comment in `qindu.wxs` (line 8) to document the required WiX extensions:
+
+```
+candle qindu.wxs -dProductVersion=0.1.0 -ext WixUtilExtension -ext WixUIExtension
+```
+
+- `WixUtilExtension`: Required for `RemoveFolderEx` elements in `cleanup.wxs`
+- `WixUIExtension`: Required for `WixUI_InstallDir` dialog set referenced in `dialogs.wxs` and `qindu.wxs`
+
+**Verification**:
+- Grep confirmed zero remaining `<Wix` or `</Wix>` elements in any include file.
+- `go vet ./...` passes (no Go code changed).
+- `go fmt ./...` passes (no Go code changed).
+
+### 9.1 WiX Namespace Prefix Fix (2026-06-15)
+
+**Problem**: After fixing the root element, the MSI build on the Windows VM still fails with two CNDL0005 schema validation errors:
+
+```
+cleanup.wxs(29): error CNDL0005: The Component element contains an unexpected child element 'RemoveFolderEx'.
+dialogs.wxs(17): error CNDL0005: The Fragment element contains an unexpected child element 'Dialog'.
+```
+
+Both elements come from WiX extensions and have specific namespace/placement requirements.
+
+#### Fix 1: `cleanup.wxs` — `util:RemoveFolderEx` namespace prefix
+
+**Root cause**: `RemoveFolderEx` is defined by `WixUtilExtension` in the `http://schemas.microsoft.com/wix/UtilExtension` namespace. The element was used without the `util:` prefix, placing it in the default core WiX namespace where it does not exist.
+
+**Fix applied**:
+1. Added `xmlns:util="http://schemas.microsoft.com/wix/UtilExtension"` to the `<Include>` root element (line 2).
+2. Changed `<RemoveFolderEx` → `<util:RemoveFolderEx` (2 occurrences, lines 29, 41).
+3. Changed `</RemoveFolderEx>` → `</util:RemoveFolderEx>` (1 occurrence, line 31; the self-closing variant at line 41 has no separate closing tag).
+
+**CI dependency**: The CI workflow's `candle` command (`ci.yml` line 210) currently uses only `-ext WixUIExtension`. It **must** also include `-ext WixUtilExtension` for the `util:RemoveFolderEx` element to be recognized at compile time. This is a separate fix needed in `ci.yml` (not modified in this sprint — the `qindu.wxs` build comment on line 8 already documents the correct `candle` invocation with both extensions).
+
+#### Fix 2: `dialogs.wxs` — `Dialog` must be inside `<UI>`, not direct child of `Fragment`
+
+**Investigation**: Checked whether `Dialog` requires the `ui:` prefix from the WixUIExtension namespace. **Conclusion**: `Dialog` is a **core WiX v3 element** in `http://schemas.microsoft.com/wix/2006/wi`. No namespace prefix is needed. The actual issue is **structural**: in the WiX v3.14 XSD schema, `Dialog` is **not** a valid direct child of `Fragment`. It must be nested inside a `<UI>` element. The `Fragment` element's content model allows `<UI>` as a child, and `<UI>` allows `<Dialog>`.
+
+**Fix applied**:
+1. Merged the two `<Fragment>` elements into one — previously the three `Dialog` elements were in Fragment 1 and the `<UI Id="QinduUI">` with `Publish` overrides was in Fragment 2. The merge avoids orphaned elements.
+2. Moved all three `Dialog` elements (`QinduNoticeDlg`, `QinduOptionsDlg`, `QinduUninstallDlg`) inside the `<UI Id="QinduUI">` element, after the `<UIRef>` and `<Publish>` elements.
+3. Preserved all comments, control elements, and dialog content exactly as-is.
+4. Added a note in the file header documenting that `Dialog` is a core WiX element and must be nested inside `<UI>`.
+
+**Pre-existing issue identified**: Both `qindu.wxs` (line 94) and `dialogs.wxs` (line 28) now define `<UI Id="QinduUI">`. The `qindu.wxs` version contains only `<UIRef Id="WixUI_InstallDir" />` and is now redundant since `dialogs.wxs` provides the complete UI definition (UIRef + custom Dialogs + Publish overrides). This duplicate `<UI Id="QinduUI">` is expected to produce a **link-time duplicate symbol error** (`light` phase, not `candle`). Removing lines 94–96 from `qindu.wxs` would resolve it. This is noted for the next fix cycle — it is outside the scope of these two files.
+
+**Verification**:
+- `go vet ./...` passes (no Go code changed).
+- `go fmt ./...` passes (no Go code changed).
+- `grep -n "RemoveFolderEx" installer/wix/includes/cleanup.wxs` confirms all occurrences use `util:RemoveFolderEx` (2 opening, 1 closing, 1 self-closing).
+- `grep -n "<Dialog " installer/wix/includes/dialogs.wxs` confirms all three `Dialog` elements are inside the `<UI Id="QinduUI">` block (lines 44, 67, 93).
+- XML well-formedness verified via `xmllint --noout` on both files.
+
+### 9.1.1 Follow-Up — Duplicate `<UI Id="QinduUI">` Removal (2026-06-15)
+
+**Problem**: After the §9.1 `dialogs.wxs` fix moved all `<UI Id="QinduUI">` content (UIRef + Dialogs + Publish overrides) into the include file, `qindu.wxs` still had a duplicate `<UI Id="QinduUI">` block at lines 91–96 containing only `<UIRef Id="WixUI_InstallDir" />`. Since both definitions share the same `Id="QinduUI"`, the WiX linker (`light`) would produce a duplicate symbol error at link time.
+
+**Fix**: Removed lines 91–96 from `installer/wix/qindu.wxs`:
+- Removed the `<!-- UI: custom dialog sequence ... -->` comment block (3 lines)
+- Removed `<UI Id="QinduUI">` / `<UIRef Id="WixUI_InstallDir" />` / `</UI>` (3 lines)
+
+The `<UIRef Id="WixUI_InstallDir" />` is already present in `dialogs.wxs` line 30 inside the canonical `<UI Id="QinduUI">` definition — no functionality is lost.
+
+**Verification**:
+- `grep -n "UI.*QinduUI" installer/wix/qindu.wxs installer/wix/includes/dialogs.wxs` → exactly one match in `dialogs.wxs` (line 28), zero in `qindu.wxs`.
+- `go vet ./...` passes.
+- `go fmt ./...` passes.
+
+### 9.1.2 Follow-Up — CI Candle Command Missing `-ext WixUtilExtension` (2026-06-15)
+
+**Problem**: The `build-msi` job's `candle` command in `.github/workflows/ci.yml` (line 210) had:
+```
+candle qindu.wxs -dProductVersion=%VERSION% -ext WixUIExtension
+```
+It was missing `-ext WixUtilExtension`, which is required for the `util:RemoveFolderEx` elements in `cleanup.wxs` (added in §9.1). Without this extension, candle would fail because it cannot resolve elements in the `http://schemas.microsoft.com/wix/UtilExtension` namespace during .wxs parsing.
+
+**Fix**: Changed the candle invocation to:
+```
+candle qindu.wxs -dProductVersion=%VERSION% -ext WixUtilExtension -ext WixUIExtension
+```
+
+**Note**: The build comment in `qindu.wxs` line 8 already documented the correct invocation with both extensions, but the CI workflow had not been updated to match.
+
+**Verification**:
+- `grep "candle qindu.wxs" .github/workflows/ci.yml` → line 210 confirms both `-ext WixUtilExtension` and `-ext WixUIExtension`.
+- `go vet ./...` passes.
+- `go fmt ./...` passes.
+
+### 9.1.3 WiX v3.14.1 Strict Element Ordering Fix (2026-06-15)
+
+**Problem**: WiX v3.14.1 enforces strict element ordering inside `<Wix>`: `<Product>` must appear BEFORE `<Fragment>`. All 8 `<?include?>` directives (which expand to `<Fragment>` elements from the included files) were at lines 17-24 of `qindu.wxs`, BEFORE `<Product>` at line 34. This causes:
+```
+error CNDL0107: The element 'Wix' has invalid child element 'Product'.
+List of possible elements expected: 'Fragment'.
+```
+
+**Fix 1 — `qindu.wxs` include ordering**: Moved all 8 `<?include?>` directives from before `<Product>` to after `</Product>` (still inside `<Wix>`). The `<?ifndef ProductVersion ?>` / `<?define?>` block (preprocessor-only, no XML output) stays before `<Product>` since `Product` references `$(var.ProductVersion)`.
+
+**Fix 2 — `qindu.wxs` xmlns:util**: Already present on the `<Wix>` root element (line 2). The `xmlns:util="http://schemas.microsoft.com/wix/UtilExtension"` namespace is required because `<Include>` wrappers in included files are stripped by the preprocessor, which would lose namespace declarations at the `<Include>` level. No change needed.
+
+**Fix 3 — `cleanup.wxs` Condition placement**: Already applied in §9.1 — `<Condition>DELETEDATA="1"</Condition>` is at the `<Component>` level (line 29), not inside `<util:RemoveFolderEx>`. In WiX v3.14.1, `<Condition>` is not a valid child of `<util:RemoveFolderEx>`. No change needed.
+
+**Verification**:
+- `grep -n "<?include" installer/wix/qindu.wxs` → lines 105-112 (all after `</Product>` at line 102).
+- `grep -n "xmlns:util" installer/wix/qindu.wxs` → line 2 on `<Wix>` root.
+- `grep -n -A2 "CleanupProgramDataDir\"" installer/wix/includes/cleanup.wxs` → `<Condition>` at line 29, `<util:RemoveFolderEx>` at line 30 (sibling, not parent-child).
+- `go vet ./...` passes.
+- `go fmt ./...` passes.
