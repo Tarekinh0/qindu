@@ -19,8 +19,7 @@ QINDU-0001: Proxy TLS local sélectif
 ### Phase 2: Installation & Packaging (Sprints QINDU-0002 → QINDU-0004)
 
 ```
-QINDU-0002: Installer Windows + Service
-QINDU-0003: Désinstallation propre
+QINDU-0002: Installer Windows + Service (inclut désinstallation)
 QINDU-0004: CI/CD Pipeline
 ```
 
@@ -55,7 +54,7 @@ QINDU-0016: Config UI locale (tray icon - optionnel)
 
 ```
 QINDU-0001 (Proxy)
-  ├── QINDU-0002 (Installer) ──► QINDU-0003 (Désinstallation)
+  ├── QINDU-0002 (Installer + Désinstallation)
   ├── QINDU-0004 (CI/CD)
   ├── QINDU-0005 (Moteur PII)
   │     └── QINDU-0006 (Tokenisation)
@@ -80,7 +79,7 @@ QINDU-0001 (Proxy)
 ## Key Milestones
 
 1. **M0 - Proxy fonctionnel**: QINDU-0001 done → le proxy tourne, CONNECT, MITM, PAC, logs
-2. **M1 - Installable**: QINDU-0002 + QINDU-0003 done → installation/désinstallation Windows complète
+2. **M1 - Installable**: QINDU-0002 done → installation/désinstallation Windows complète
 3. **M2 - PII Ready**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles
 4. **M3 - MVP Privacy**: QINDU-0008 + QINDU-0009 + QINDU-0010 done → flux complet tokenisation → réhydratation
 5. **M4 - V1 Complete**: QINDU-0011 + QINDU-0012 + QINDU-0013 done → ChatGPT et Claude supportés

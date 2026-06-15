@@ -43,29 +43,24 @@ items:
   test_count: 148
   bugs_fixed: 30
 
-- id: QINDU-0003
-  title: "Désinstallation propre"
-  status: DRAFT
-  adr_ref: [ADR-003, ADR-006]
-  domains: [installer, trust-store, cleanup]
-  dependencies: [QINDU-0002]
-  gates_required: [DPO, CISO, QA]
-  human_inputs_required: []
-  forbidden: [PII detection, tokenization, vault]
-  acceptance_evidence: "Désinstallation : service arrêté, CA supprimée du trust store, clé CA supprimée, policies Chrome/Edge retirées, firewall supprimé, vault conservé ou supprimé selon choix. Pas de traces résiduelles."
-  notes: "Option conserver/supprimer le vault explicitement demandée à l'utilisateur."
+# QINDU-0003 removed — uninstall now handled by QINDU-0002 (checkbox DELETEDATA, RemoveFolderEx, certutil -delstore)
 
 - id: QINDU-0004
   title: "CI/CD Pipeline"
-  status: DRAFT
+  status: DONE
   adr_ref: [ADR-007]
   domains: [ci, cd, github-actions]
   dependencies: [QINDU-0001]
   gates_required: [CISO, Release]
   human_inputs_required: ["GitHub secrets pour code signing (futur)"]
   forbidden: [PII in CI logs, secrets in repo]
-  acceptance_evidence: "GitHub Actions : go vet, go test, cross-compilation GOOS=windows sur ubuntu-latest. Tests intégration testcontainers-go passent."
-  notes: "Pas de déploiement automatique en V1. Build vérifié seulement."
+  acceptance_evidence: "GitHub Actions : go vet, go test -race, cross-compilation GOOS=windows amd64+arm64, golangci-lint (7 linters), test coverage artifact, agent.exe artifact + SHA256, code-signing placeholder, SHA-pinned actions (15/15), permissions: contents: read, concurrency cancellation. Tests intégration testcontainers-go passent."
+  notes: "Pipeline CI renforcé : actions épinglées SHA, permissions moindre privilège, golangci-lint v2.7.2, couverture de test. Pas de déploiement automatique en V1."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0004/"
+  closure_date: "2026-06-15"
+  go_version: "1.26"
+  test_count: 148
+  bugs_fixed: 0
 
 # ─── Phase 2: Moteur PII ──────────────────────────────────────────
 
