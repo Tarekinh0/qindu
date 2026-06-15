@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!-- Standard Program Files directory for the agent binary and default config -->
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="AgentExeComponent" Guid="*" Win64="yes">
+        <File Id="AgentExe" Name="agent.exe" Source="agent.exe" KeyPath="yes" />
+        <ServiceInstall
+          Id="QinduServiceInstall"
+          Name="!(loc.ServiceName)"
+          DisplayName="!(loc.ServiceDisplayName)"
+          Description="!(loc.ServiceDescription)"
+          Type="ownProcess"
+          Start="auto"
+          Account="NT AUTHORITY\LocalService"
+          ErrorControl="normal"
+          Vital="yes" />
+        <ServiceControl
+          Id="QinduServiceControl"
+          Name="!(loc.ServiceName)"
+          Start="install"
+          Stop="both"
+          Remove="uninstall"
+          Wait="yes" />
+      </Component>
+
+      <Component Id="DefaultConfigComponent" Guid="*" Win64="yes">
+        <File Id="DefaultConfig" Name="default.yaml" Source="configs\default.yaml" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- ProgramData directory with restricted ACL (SR-INSTALLER-8, DPO R6) -->
+    <DirectoryRef Id="PROGRAMDATADIR">
+      <Component Id="ProgramDataDirComponent" Guid="*" Win64="yes">
+        <CreateFolder>
+          <!-- SYSTEM: Full Control -->
+          <Permission User="NT AUTHORITY\SYSTEM" GenericAll="yes" />
+          <!-- Administrators: Full Control -->
+          <Permission User="BUILTIN\Administrators" GenericAll="yes" />
+          <!-- LocalService: Read/Write (service account) -->
+          <Permission User="NT AUTHORITY\LocalService" GenericRead="yes" GenericWrite="yes" GenericExecute="yes" />
+        </CreateFolder>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ProgramFilesComponents">
+      <ComponentRef Id="AgentExeComponent" />
+      <ComponentRef Id="DefaultConfigComponent" />
+    </ComponentGroup>
+    <ComponentGroup Id="ProgramDataComponents">
+      <ComponentRef Id="ProgramDataDirComponent" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

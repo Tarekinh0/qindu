@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="TARGETDIR">
+      <Component Id="ChromePolicyComponent" Guid="*" Win64="yes">
+        <!-- Machine-wide Chrome proxy policies (HKLM) -->
+        <RegistryKey Root="HKLM" Key="Software\Policies\Google\Chrome">
+          <RegistryValue Name="ProxyMode" Type="string" Value="pac_script" KeyPath="yes" />
+          <RegistryValue Name="ProxyPacUrl" Type="string" Value="http://127.0.0.1:8787/proxy.pac" />
+          <RegistryValue Name="QuicAllowed" Type="integer" Value="0" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="RegistryChromeComponents">
+      <ComponentRef Id="ChromePolicyComponent" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!--
+  Uninstall cleanup actions.
+
+  Cleanup is sequenced:
+    1. Stop service (handled by ServiceControl Stop="both")
+    2. Remove CA from trust store (handled by ca-trust.wxs)
+    3. Remove firewall rules (handled by firewall.wxs)
+    4. Remove registry keys (handled by component uninstall)
+    5. Remove program files (handled by component uninstall)
+    6. Optionally remove ProgramData (conditionally, only if DELETEDATA=1)
+    7. Remove INSTALLDIR (always — unconditionally clean Program Files on uninstall)
+
+  DPO R5: DELETEDATA must be unchecked by default. The checkbox in
+  dialogs.wxs controls this property. RemoveFolderEx only fires when
+  DELETEDATA="1".
+
+  SR-INSTALLER-7: conditional on explicit opt-in only.
+
+  RemoveFolderEx uses the Windows Installer API directly, handles locked
+  files gracefully, integrates with MSI rollback, and eliminates the
+  command-injection surface of shelling out to cmd.exe.
+  -->
+  <Fragment>
+    <!-- Conditional: remove ProgramData only if user opted in -->
+    <DirectoryRef Id="PROGRAMDATADIR">
+      <Component Id="CleanupProgramDataDir" Guid="*" Win64="yes">
+        <RemoveFolderEx Id="CleanupProgramDataDirEx" On="uninstall" Property="PROGRAMDATADIR">
+          <Condition>DELETEDATA="1"</Condition>
+        </RemoveFolderEx>
+      </Component>
+    </DirectoryRef>
+
+    <!-- Unconditional: always clean INSTALLDIR on uninstall (PR-H4).
+         MSI component uninstall removes tracked files, but RemoveFolderEx
+         ensures orphaned files (crash dumps, .tmp, user-placed files) are
+         also cleaned. -->
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="CleanupInstallDir" Guid="*" Win64="yes">
+        <RemoveFolderEx Id="CleanupInstallDirEx" On="uninstall" Property="INSTALLDIR" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="CleanupComponents">
+      <ComponentRef Id="CleanupProgramDataDir" />
+      <ComponentRef Id="CleanupInstallDir" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <!-- ================================================================
+  Qindu AI Privacy Proxy — Windows MSI Installer
+
+  Build:
+    candle qindu.wxs -dProductVersion=0.1.0
+    light qindu.wixobj -out Qindu-Installer-x64.msi -cultures:en-us -loc locale/en-us.wxl
+
+  UpgradeCode is fixed to identify Qindu across versions.
+  ProductCode and PackageCode use "*" for auto-generation on each build.
+  DO NOT CHANGE the UpgradeCode after the first release.
+  ================================================================ -->
+
+  <!-- Include modular WiX fragments -->
+  <?include includes/files.wxs ?>
+  <?include includes/service.wxs ?>
+  <?include includes/registry-chrome.wxs ?>
+  <?include includes/registry-edge.wxs ?>
+  <?include includes/firewall.wxs ?>
+  <?include includes/ca-trust.wxs ?>
+  <?include includes/cleanup.wxs ?>
+  <?include includes/dialogs.wxs ?>
+
+  <!--
+  Product version: passed via -dProductVersion=X.Y.Z at build time.
+  Defaults to 0.0.0 if not set.
+  -->
+  <?ifndef ProductVersion ?>
+    <?define ProductVersion = "0.0.0" ?>
+  <?endif ?>
+
+  <Product
+    Id="*"
+    Name="!(loc.ProductName)"
+    Language="1033"
+    Version="$(var.ProductVersion)"
+    Manufacturer="!(loc.Manufacturer)"
+    UpgradeCode="{5319E462-2A8D-476D-8896-32F36E454A98}">
+
+    <Package
+      Id="*"
+      Keywords="Installer"
+      Description="!(loc.ProductDescription)"
+      Manufacturer="!(loc.Manufacturer)"
+      InstallerVersion="500"
+      Languages="1033"
+      Compressed="yes"
+      InstallScope="perMachine"
+      Comments="Qindu AI Privacy Proxy Installer" />
+
+    <!-- Major upgrade: allow same-version repair, block downgrades -->
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      AllowDowngrades="no"
+      DowngradeErrorMessage="A newer version of !(loc.ProductName) is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- ================================================================
+    Directory structure:
+      INSTALLDIR        = %PROGRAMFILES%\Qindu\       (agent.exe, configs\)
+      PROGRAMDATADIR    = %PROGRAMDATA%\Qindu\         (CA key, cert, logs, vault)
+    ================================================================ -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="Qindu">
+          <Directory Id="ConfigsDir" Name="configs" />
+        </Directory>
+      </Directory>
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="PROGRAMDATADIR" Name="Qindu" />
+      </Directory>
+    </Directory>
+
+    <!-- ================================================================
+    Feature: single feature containing all components.
+    ================================================================ -->
+    <Feature Id="MainFeature" Title="!(loc.FeatureTitle)" Description="!(loc.FeatureDesc)"
+             Level="1" Absent="disallow" Display="expand"
+             ConfigurableDirectory="INSTALLDIR">
+      <ComponentGroupRef Id="ProgramFilesComponents" />
+      <ComponentGroupRef Id="ProgramDataComponents" />
+      <ComponentGroupRef Id="ServiceComponents" />
+      <ComponentGroupRef Id="RegistryChromeComponents" />
+      <ComponentGroupRef Id="RegistryEdgeComponents" />
+      <ComponentGroupRef Id="CleanupComponents" />
+    </Feature>
+
+    <!-- ================================================================
+    UI: custom dialog sequence based on WixUI_InstallDir.
+    ================================================================ -->
+    <UI Id="QinduUI">
+      <UIRef Id="WixUI_InstallDir" />
+    </UI>
+
+    <!-- UNSAFE_CA and DELETEDATA as public properties (settable via
+         command line: msiexec /i installer.msi UNSAFE_CA=1) -->
+    <Property Id="UNSAFE_CA" Secure="yes" />
+    <Property Id="DELETEDATA" Secure="yes" />
+
+    <!-- WixUI_InstallDir properties -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+
+    <!-- Launch condition: block silent/quiet install when UNSAFE_CA=1.
+         SR-INSTALLER-14: unsafe CA generation requires interactive consent,
+         which is only available through the QinduOptionsDlg checkbox in
+         the full UI. Silent mode (UILevel=2) and quiet mode (UILevel=3)
+         bypass this dialog entirely. -->
+    <Condition Message="!(loc.UnsafeCASilentBlocked)">
+      NOT (UNSAFE_CA="1" AND (UILevel=2 OR UILevel=3))
+    </Condition>
+
+    <!-- License text for LicenseAgreementDlg -->
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+
+  </Product>
+</Wix>

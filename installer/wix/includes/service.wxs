@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!--
+  Service components and group reference.
+  The actual ServiceInstall and ServiceControl elements live in files.wxs
+  alongside the agent.exe File element (required by WiX). This file
+  provides the ComponentGroup for the feature tree.
+  -->
+  <Fragment>
+    <ComponentGroup Id="ServiceComponents">
+      <ComponentRef Id="AgentExeComponent" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>

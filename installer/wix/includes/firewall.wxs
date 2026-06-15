@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!-- Firewall: Allow loopback on port 8787 (DIR=IN, remoteip=loopback only).
+         Rule name hardcoded in English for consistency with uninstall (PR-H5). -->
+    <CustomAction
+      Id="FirewallAllowLoopback"
+      Directory="INSTALLDIR"
+      ExeCommand='netsh advfirewall firewall add rule name="Qindu Agent (Allow Loopback)" dir=in action=allow remoteip=127.0.0.1,::1 localport=8787 protocol=TCP'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!-- Firewall: Block external connections to port 8787.
+         Rule name hardcoded in English for consistency with uninstall (PR-H5). -->
+    <CustomAction
+      Id="FirewallBlockExternal"
+      Directory="INSTALLDIR"
+      ExeCommand='netsh advfirewall firewall add rule name="Qindu Agent (Block External)" dir=in action=block remoteip=any localport=8787 protocol=TCP'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!-- Firewall: Remove rules on uninstall (hardcoded English names for
+         uninstall resilience across locale/version changes; PR-007, PR-H5). -->
+    <CustomAction
+      Id="FirewallRemoveAllowLoopback"
+      Directory="INSTALLDIR"
+      ExeCommand='netsh advfirewall firewall delete rule name="Qindu Agent (Allow Loopback)"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <CustomAction
+      Id="FirewallRemoveBlockExternal"
+      Directory="INSTALLDIR"
+      ExeCommand='netsh advfirewall firewall delete rule name="Qindu Agent (Block External)"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!-- Rollback: remove firewall rules if install fails after they were created.
+         Uses hardcoded English names for consistency (PR-H5). -->
+    <CustomAction
+      Id="FirewallRollbackAllowLoopback"
+      Directory="INSTALLDIR"
+      ExeCommand='netsh advfirewall firewall delete rule name="Qindu Agent (Allow Loopback)"'
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore" />
+
+    <CustomAction
+      Id="FirewallRollbackBlockExternal"
+      Directory="INSTALLDIR"
+      ExeCommand='netsh advfirewall firewall delete rule name="Qindu Agent (Block External)"'
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore" />
+  </Fragment>
+
+  <Fragment>
+    <InstallExecuteSequence>
+      <!-- Allow must be created BEFORE block (SR-INSTALLER-4) -->
+      <Custom Action="FirewallAllowLoopback" After="InstallServices">NOT Installed</Custom>
+      <Custom Action="FirewallBlockExternal" After="FirewallAllowLoopback">NOT Installed</Custom>
+      <!-- Rollback: remove rules in reverse order if install fails after creation -->
+      <Custom Action="FirewallRollbackBlockExternal" Before="FirewallBlockExternal">NOT Installed</Custom>
+      <Custom Action="FirewallRollbackAllowLoopback" Before="FirewallAllowLoopback">NOT Installed</Custom>
+      <!-- Remove on uninstall: reverse order -->
+      <Custom Action="FirewallRemoveBlockExternal" Before="RemoveFiles">Installed AND NOT REINSTALL</Custom>
+      <Custom Action="FirewallRemoveAllowLoopback" After="FirewallRemoveBlockExternal">Installed AND NOT REINSTALL</Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

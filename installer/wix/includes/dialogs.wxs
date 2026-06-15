@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!-- ================================================================
+    Custom installer UI with transparency notice, unsafe CA checkbox,
+    and uninstall data deletion checkbox.
+
+    Uses WixUI_InstallDir as the base and inserts custom dialogs:
+      - QinduNoticeDlg: Transparency notice (DPO R1)
+      - QinduOptionsDlg: UNSAFE_CA checkbox (DPO R7, SR-INSTALLER-3)
+      - For uninstall: custom MaintenanceTypeDlg with DELETEDATA checkbox
+
+    All dialog text is in locale/en-us.wxl for localization support.
+    ================================================================ -->
+
+    <!-- === Transparency Notice Dialog (DPO R1) === -->
+    <Dialog Id="QinduNoticeDlg" Width="370" Height="270" Title="!(loc.NoticeTitle)" NoMinimize="yes">
+      <Control Id="NoticeText" Type="Text" X="15" Y="10" Width="340" Height="190"
+               TabSkip="no" Transparent="yes">
+        <Text>!(loc.NoticeText)</Text>
+      </Control>
+      <Control Id="NoticeBanner" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+               TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUIBack)" TabSkip="no" Default="yes" Cancel="yes">
+        <Publish Event="NewDialog" Value="WelcomeDlg">1</Publish>
+      </Control>
+      <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUINext)" TabSkip="no">
+        <Publish Event="NewDialog" Value="QinduOptionsDlg">1</Publish>
+      </Control>
+      <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUICancel)" TabSkip="no" Cancel="yes">
+        <Publish Event="EndDialog" Value="Exit">1</Publish>
+      </Control>
+    </Dialog>
+
+    <!-- === Unsafe CA Options Dialog (DPO R7, SR-INSTALLER-3) === -->
+    <Dialog Id="QinduOptionsDlg" Width="370" Height="270" Title="!(loc.UnsafeCATitle)" NoMinimize="yes">
+      <Control Id="OptionsText" Type="Text" X="15" Y="10" Width="340" Height="120"
+               TabSkip="no" Transparent="yes">
+        <Text>!(loc.UnsafeCAText)</Text>
+      </Control>
+      <!-- UNSAFE_CA checkbox: unchecked by default (SR-INSTALLER-3) -->
+      <Control Id="UnsafeCACheckbox" Type="CheckBox" X="15" Y="140" Width="340" Height="17"
+               CheckBoxValue="1" Property="UNSAFE_CA" Text="!(loc.UnsafeCACheckbox)" />
+      <Control Id="OptionsBanner" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+               TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="BottomLine2" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Back2" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUIBack)" TabSkip="no" Default="yes" Cancel="yes">
+        <Publish Event="NewDialog" Value="QinduNoticeDlg">1</Publish>
+      </Control>
+      <Control Id="Next2" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUINext)" TabSkip="no">
+        <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      </Control>
+      <Control Id="Cancel2" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUICancel)" TabSkip="no" Cancel="yes">
+        <Publish Event="EndDialog" Value="Exit">1</Publish>
+      </Control>
+    </Dialog>
+
+    <!-- === Uninstall Data Deletion Dialog (DPO R5, SR-INSTALLER-7) === -->
+    <Dialog Id="QinduUninstallDlg" Width="370" Height="270" Title="!(loc.DeleteDataTitle)" NoMinimize="yes">
+      <Control Id="UninstallText" Type="Text" X="15" Y="10" Width="340" Height="120"
+               TabSkip="no" Transparent="yes">
+        <Text>!(loc.DeleteDataText)</Text>
+      </Control>
+      <!-- DELETEDATA checkbox: unchecked by default (DPO R5) -->
+      <Control Id="DeleteDataCheckbox" Type="CheckBox" X="15" Y="140" Width="340" Height="17"
+               CheckBoxValue="1" Property="DELETEDATA" Text="!(loc.DeleteDataCheckbox)" />
+      <Control Id="UninstallBanner" Type="Bitmap" X="0" Y="0" Width="370" Height="44"
+               TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="BottomLine3" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Back3" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUIBack)" TabSkip="no" Default="yes" Cancel="yes">
+        <Publish Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+      </Control>
+      <Control Id="Next3" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUINext)" TabSkip="no">
+        <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      </Control>
+      <Control Id="Cancel3" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+               Text="!(loc.WixUICancel)" TabSkip="no" Cancel="yes">
+        <Publish Event="EndDialog" Value="Exit">1</Publish>
+      </Control>
+    </Dialog>
+
+    <!-- ================================================================
+    Dialog sequencing: override built-in WixUI_InstallDir transitions.
+
+    Install path:
+      WelcomeDlg → QinduNoticeDlg → QinduOptionsDlg → VerifyReadyDlg → ProgressDlg → ExitDlg
+
+    Uninstall path:
+      MaintenanceWelcomeDlg → MaintenanceTypeDlg → QinduUninstallDlg → VerifyReadyDlg → ProgressDlg → ExitDlg
+    ================================================================ -->
+  </Fragment>
+
+  <Fragment>
+    <UI Id="QinduUI">
+      <!-- Reference WixUI_InstallDir as base -->
+      <UIRef Id="WixUI_InstallDir" />
+
+      <!-- Override: LicenseAgreementDlg → QinduNoticeDlg (insert transparency notice) -->
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog"
+               Value="QinduNoticeDlg">LicenseAccepted = "1"</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="SpawnDialog"
+               Value="CancelDlg">LicenseAccepted &lt;&gt; "1"</Publish>
+
+      <!-- Override: MaintenanceTypeDlg Remove → QinduUninstallDlg (insert delete data prompt) -->
+      <!-- When user clicks Remove on MaintenanceTypeDlg, show our uninstall dialog -->
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog"
+               Value="QinduUninstallDlg">1</Publish>
+    </UI>
+  </Fragment>
+</Wix>

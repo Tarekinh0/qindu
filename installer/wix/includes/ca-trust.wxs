@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!-- CA-Init: generate CA with Name Constraints (normal mode) -->
+    <CustomAction
+      Id="CAInitNormal"
+      Directory="INSTALLDIR"
+      ExeCommand='"[#AgentExe]" ca-init'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!-- CA-Init: generate CA without Name Constraints (unsafe mode).
+         Uses the auto-confirm-unsafe flag to skip the interactive stdin check
+         since the MSI deferred context has no terminal. The QinduOptionsDlg
+         checkbox (User already saw the warning) serves as consent (PR-C2). -->
+    <CustomAction
+      Id="CAInitUnsafe"
+      Directory="INSTALLDIR"
+      ExeCommand='"[#AgentExe]" ca-init --unsafe --auto-confirm-unsafe'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!-- Pre-check: verify whether CA already exists in trust store.
+         Return="ignore" because non-existence returns non-zero (expected).
+         This runs only for informational/logging purposes. -->
+    <CustomAction
+      Id="CACheckTrustStore"
+      Directory="INSTALLDIR"
+      ExeCommand='[System64Folder]certutil.exe -verifystore Root "!(loc.CAName)"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+
+    <!-- Install CA certificate into machine trust store (certutil via absolute path).
+         SR-INSTALLER-2: use absolute path for certutil to prevent PATH hijacking.
+         Return="check" per PR-H1: genuine failures (corrupted store, missing certutil)
+         must not be silently swallowed. -->
+    <CustomAction
+      Id="CAInstallTrustStore"
+      Directory="INSTALLDIR"
+      ExeCommand='[System64Folder]certutil.exe -addstore Root "[PROGRAMDATADIR]ca.crt"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <!-- Remove CA from trust store on uninstall (by Common Name, not file path).
+         Return="check" per PR-H1: if the CA cannot be removed, the user should know. -->
+    <CustomAction
+      Id="CARemoveTrustStore"
+      Directory="INSTALLDIR"
+      ExeCommand='[System64Folder]certutil.exe -delstore Root "!(loc.CAName)"'
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+  </Fragment>
+
+  <Fragment>
+    <!-- CA removal CustomAction for rollback (if install fails after CA added) -->
+    <CustomAction
+      Id="CARollbackTrustStore"
+      Directory="INSTALLDIR"
+      ExeCommand='[System64Folder]certutil.exe -delstore Root "!(loc.CAName)"'
+      Execute="rollback"
+      Impersonate="no"
+      Return="ignore" />
+  </Fragment>
+
+  <Fragment>
+    <InstallExecuteSequence>
+      <!-- Generate CA (normal or unsafe based on UNSAFE_CA property).
+           After="InstallFiles" ensures the ProgramData directory (with ACL from
+           CreateFolder) exists before ca-init runs (PR-H3). -->
+      <Custom Action="CAInitNormal" After="InstallFiles">NOT Installed AND NOT UNSAFE_CA="1"</Custom>
+      <!-- SR-INSTALLER-14: block silent/quiet install for unsafe CA.
+           Interactive consent is required; only the full UI (not silent/quiet)
+           provides the QinduOptionsDlg checkbox as the consent mechanism. -->
+      <Custom Action="CAInitUnsafe" After="InstallFiles">NOT Installed AND UNSAFE_CA="1" AND (NOT UILevel=2) AND (NOT UILevel=3)</Custom>
+      <!-- Pre-check CA trust store existence (informational only) -->
+      <Custom Action="CACheckTrustStore" After="CAInitNormal">NOT Installed AND NOT UNSAFE_CA="1"</Custom>
+      <Custom Action="CACheckTrustStore" After="CAInitUnsafe">NOT Installed AND UNSAFE_CA="1"</Custom>
+      <!-- Install CA into trust store. Runs after pre-check.
+           Each After is paired with the same condition as the matching CAInit,
+           so exactly one constraint fires per install (PR-008). -->
+      <Custom Action="CAInstallTrustStore" After="CACheckTrustStore">NOT Installed AND NOT UNSAFE_CA="1"</Custom>
+      <Custom Action="CAInstallTrustStore" After="CACheckTrustStore">NOT Installed AND UNSAFE_CA="1"</Custom>
+      <!-- Rollback if install fails -->
+      <Custom Action="CARollbackTrustStore" Before="CAInstallTrustStore">NOT Installed</Custom>
+      <!-- Remove CA on uninstall -->
+      <Custom Action="CARemoveTrustStore" Before="RemoveFiles">Installed AND NOT REINSTALL</Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>
