@@ -5,8 +5,8 @@
   Qindu AI Privacy Proxy — Windows MSI Installer
 
   Build:
-    candle qindu.wxs -dProductVersion=0.1.0 -ext WixUtilExtension -ext WixUIExtension
-    light qindu.wixobj -out Qindu-Installer-x64.msi -cultures:en-us -loc locale/en-us.wxl
+    candle qindu.wxs -dProductVersion=0.1.0 -arch x64 -ext WixUtilExtension -ext WixUIExtension
+    light qindu.wixobj -ext WixUtilExtension -out Qindu-Installer-x64.msi -cultures:en-us -loc locale/en-us.wxl
 
   UpgradeCode is fixed to identify Qindu across versions.
   ProductCode and PackageCode use "*" for auto-generation on each build.
@@ -38,6 +38,7 @@
       Languages="1033"
       Compressed="yes"
       InstallScope="perMachine"
+      Platform="x64"
       Comments="Qindu AI Privacy Proxy Installer" />
 
     <!-- Major upgrade: allow same-version repair, block downgrades -->
@@ -47,6 +48,11 @@
       DowngradeErrorMessage="A newer version of !(loc.ProductName) is already installed." />
 
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- WixCA binary is auto-registered by WixUtilExtension. No explicit
+         <Binary> declaration needed; WixQuietExec/WixQuietExec64 are
+         provided by wixca.dll which WixUtilExtension bundles automatically. -->
+
 
     <!-- ================================================================
     Directory structure:
@@ -84,6 +90,7 @@
     <Property Id="UNSAFE_CA" Secure="yes" />
     <Property Id="DELETEDATA" Secure="yes" />
 
+
     <!-- WixUI_InstallDir properties -->
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
 
@@ -98,6 +105,113 @@
 
     <!-- License text for LicenseAgreementDlg -->
     <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+
+    <!-- ================================================================
+    InstallExecuteSequence — custom action scheduling.
+
+    Ordering rationale (BUG-002, BUG-003):
+      1. InstallFiles (standard)
+      2. CAInitNormal / CAInitUnsafe — generate the CA key + cert
+      3. CACheckTrustStore — pre-check trust store (informational)
+      4. CARollbackTrustStore (rollback hook)
+      5. CAInstallTrustStore — add CA to machine trust store
+      *** standard actions run here (WriteRegistryValues, InstallServices,
+          StartServices) ***
+      6. FirewallAllowLoopback — allow loopback on 8787
+      7. FirewallBlockExternal — block external access to 8787
+
+    CRITICAL (BUG-003): CA generation (steps 2-5) must complete before
+    StartServices. Since these CAs are sequenced After="InstallFiles" and
+    StartServices runs near the end of the standard sequence, the ordering
+    is naturally correct without explicit Before/After on service actions.
+
+    Uninstall: firewall rules removed first, then CA removed from trust
+    store, all before RemoveFiles.
+    ================================================================ -->
+    <InstallExecuteSequence>
+      <!-- ==========================================================
+      INSTALL: CA generation
+      ========================================================== -->
+
+      <!-- Generate CA with Name Constraints (normal mode, default).
+           After="InstallFiles" ensures PROGRAMDATADIR exists with ACLs
+           applied before ca-init writes to it (PR-H3). -->
+      <Custom Action="CAInitNormal" After="InstallFiles">NOT Installed AND NOT UNSAFE_CA="1"</Custom>
+
+      <!-- Generate CA without Name Constraints (unsafe mode).
+           SR-INSTALLER-14: blocked in silent/quiet UI (consent requires
+           the full UI checkbox). Uses -auto-confirm-unsafe to skip
+           interactive stdin since deferred context has no terminal. -->
+      <Custom Action="CAInitUnsafe" After="InstallFiles">NOT Installed AND UNSAFE_CA="1" AND (NOT UILevel=2) AND (NOT UILevel=3)</Custom>
+
+      <!-- Pre-check trust store for existing CA (informational only).
+           After="CAInitUnsafe" covers both paths: when UNSAFE_CA="1",
+           CAInitUnsafe executes and CACheckTrustStore runs after it.
+           When UNSAFE_CA!="1", CAInitUnsafe is skipped but CACheckTrustStore
+           still runs after its position (which is after CAInitNormal since
+           both are relative to InstallFiles). -->
+      <Custom Action="CACheckTrustStore" After="CAInitUnsafe">NOT Installed</Custom>
+
+      <!-- Rollback: remove CA from trust store if install fails after
+           the CA was added. Runs before CAInstallTrustStore. -->
+      <Custom Action="CARollbackTrustStore" Before="CAInstallTrustStore">NOT Installed</Custom>
+
+      <!-- Install CA certificate into machine trust store.
+           Runs after the pre-check completes.
+           SR-INSTALLER-2: uses absolute certutil path to prevent PATH hijacking. -->
+      <Custom Action="CAInstallTrustStore" After="CACheckTrustStore">NOT Installed</Custom>
+
+      <!-- Rollback: remove CRL from trust store if install fails after
+           the CRL was added. Runs before CAInstallCRL. -->
+      <Custom Action="CARollbackCRL" Before="CAInstallCRL">NOT Installed</Custom>
+
+      <!-- Install CRL into machine trust store (BUG-CRL-001).
+           Schannel requires the CRL in the system store for revocation
+           checking. Runs after CAInstallTrustStore. -->
+      <Custom Action="CAInstallCRL" After="CAInstallTrustStore">NOT Installed</Custom>
+
+      <!-- ==========================================================
+      INSTALL: Firewall rules
+      Scheduled after InstallServices so the service exists before
+      opening the loopback port. (Original firewall.wxs ordering
+      preserved.)
+      ========================================================== -->
+
+      <!-- Rollback hooks: remove firewall rules in reverse order
+           if install fails after they were created. -->
+      <Custom Action="FirewallRollbackBlockExternal" Before="FirewallBlockExternal">NOT Installed</Custom>
+      <Custom Action="FirewallRollbackAllowLoopback" Before="FirewallAllowLoopback">NOT Installed</Custom>
+
+      <!-- Allow must be created BEFORE block (SR-INSTALLER-4) -->
+      <Custom Action="FirewallAllowLoopback" After="InstallServices">NOT Installed</Custom>
+      <Custom Action="FirewallBlockExternal" After="FirewallAllowLoopback">NOT Installed</Custom>
+
+      <!-- ==========================================================
+      UNINSTALL: cleanup actions
+      ========================================================== -->
+
+      <!-- Remove firewall rules on uninstall (reverse order).
+           Before="RemoveFiles" ensures rules are gone before files
+           are deleted. -->
+      <Custom Action="FirewallRemoveBlockExternal" Before="RemoveFiles">Installed AND NOT REINSTALL</Custom>
+      <Custom Action="FirewallRemoveAllowLoopback" After="FirewallRemoveBlockExternal">Installed AND NOT REINSTALL</Custom>
+
+
+      <!-- Remove ProgramData directory if user opted in (DELETEDATA=1).
+           Runs before RemoveFiles so directory is cleaned before MSI
+           removes tracked files. WixQuietExec64 deferred CA evaluates
+           DELETEDATA=1 at uninstall time (command-line property).
+           Return="ignore" so uninstall succeeds even with locked files. -->
+      <Custom Action="CleanupProgramDataCmd" Before="RemoveFiles">Installed AND REMOVE="ALL" AND DELETEDATA="1"</Custom>
+
+      <!-- Remove CA from trust store on uninstall.
+           By Common Name (not file path) for robustness.
+           Return="ignore" per PR-101: uninstall must not fail if CA was already manually removed (missing CA is a valid state). -->
+      <Custom Action="CARemoveTrustStore" Before="RemoveFiles">Installed AND NOT REINSTALL</Custom>
+
+      <!-- Remove CRL from trust store on uninstall (BUG-CRL-001). -->
+      <Custom Action="CARemoveCRL" Before="RemoveFiles">Installed AND NOT REINSTALL</Custom>
+    </InstallExecuteSequence>
 
   </Product>
 

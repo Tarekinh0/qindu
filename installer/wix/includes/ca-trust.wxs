@@ -1,99 +1,157 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Include xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
-    <!-- CA-Init: generate CA with Name Constraints (normal mode) -->
+    <!-- CA-Init: generate CA with Name Constraints (normal mode).
+         WixQuietExec pattern (PR-001, PR-203): SetProperty resolves the
+         file key in immediate context; WixQuietExec runs it deferred. -->
+    <SetProperty Id="CAInitNormal" Before="CAInitNormal" Sequence="execute"
+        Value="&quot;[#AgentExe]&quot; ca-init">
+        NOT Installed AND NOT UNSAFE_CA=&quot;1&quot;
+    </SetProperty>
     <CustomAction
       Id="CAInitNormal"
-      Directory="INSTALLDIR"
-      ExeCommand='"[#AgentExe]" ca-init'
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
       Execute="deferred"
-      Impersonate="no"
-      Return="check" />
+      Impersonate="no" Return="check" />
 
     <!-- CA-Init: generate CA without Name Constraints (unsafe mode).
-         Uses the auto-confirm-unsafe flag to skip the interactive stdin check
-         since the MSI deferred context has no terminal. The QinduOptionsDlg
-         checkbox (User already saw the warning) serves as consent (PR-C2). -->
+         WixQuietExec pattern: SetProperty resolves file key in immediate
+         context; WixQuietExec runs deferred. Uses -auto-confirm-unsafe to
+         skip interactive stdin (deferred context has no terminal). -->
+    <SetProperty Id="CAInitUnsafe" Before="CAInitUnsafe" Sequence="execute"
+        Value="&quot;[#AgentExe]&quot; ca-init -unsafe -auto-confirm-unsafe">
+        NOT Installed AND UNSAFE_CA=&quot;1&quot; AND (NOT UILevel=2) AND (NOT UILevel=3)
+    </SetProperty>
     <CustomAction
       Id="CAInitUnsafe"
-      Directory="INSTALLDIR"
-      ExeCommand='"[#AgentExe]" ca-init --unsafe --auto-confirm-unsafe'
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
       Execute="deferred"
-      Impersonate="no"
-      Return="check" />
+      Impersonate="no" Return="check" />
 
-    <!-- Pre-check: verify whether CA already exists in trust store.
-         Return="ignore" because non-existence returns non-zero (expected).
-         This runs only for informational/logging purposes. -->
+    <!-- =============================================================
+    CA cert trust store actions — WixQuietExec pattern (PR-001)
+
+    Each deferred action has a companion SetProperty that resolves
+    MSI properties into CustomActionData while the session is still
+    in immediate context. The deferred action reads CustomActionData
+    via WixQuietExec.
+    ============================================================= -->
+
+    <!-- CACheckTrustStore: verify whether CA already exists in trust store.
+         Return="ignore" because non-existence returns non-zero (expected). -->
+    <SetProperty Id="CACheckTrustStore" Before="CACheckTrustStore" Sequence="execute"
+        Value="&quot;[System64Folder]certutil.exe&quot; -verifystore Root &quot;!(loc.CAName)&quot;">
+        NOT Installed
+    </SetProperty>
     <CustomAction
       Id="CACheckTrustStore"
-      Directory="INSTALLDIR"
-      ExeCommand='[System64Folder]certutil.exe -verifystore Root "!(loc.CAName)"'
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
       Execute="deferred"
-      Impersonate="no"
-      Return="ignore" />
+      Impersonate="no" Return="ignore" />
 
-    <!-- Install CA certificate into machine trust store (certutil via absolute path).
-         SR-INSTALLER-2: use absolute path for certutil to prevent PATH hijacking.
-         Return="check" per PR-H1: genuine failures (corrupted store, missing certutil)
-         must not be silently swallowed. -->
+    <!-- CAInstallTrustStore: add CA cert to machine trust store.
+         SR-INSTALLER-2: absolute certutil path prevents PATH hijacking.
+         Return="check": genuine failures (corrupted store) must not be swallowed. -->
+    <SetProperty Id="CAInstallTrustStore" Before="CAInstallTrustStore" Sequence="execute"
+        Value="&quot;[System64Folder]certutil.exe&quot; -addstore Root &quot;[PROGRAMDATADIR]ca.crt&quot;">
+        NOT Installed
+    </SetProperty>
     <CustomAction
       Id="CAInstallTrustStore"
-      Directory="INSTALLDIR"
-      ExeCommand='[System64Folder]certutil.exe -addstore Root "[PROGRAMDATADIR]ca.crt"'
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
       Execute="deferred"
-      Impersonate="no"
-      Return="check" />
+      Impersonate="no" Return="check" />
 
-    <!-- Remove CA from trust store on uninstall (by Common Name, not file path).
-         Return="check" per PR-H1: if the CA cannot be removed, the user should know. -->
+    <!-- CARemoveTrustStore: remove CA cert from trust store on uninstall.
+         PR-101: Return="ignore" — uninstall should not fail if CA was
+         already manually removed. A missing CA is a valid state. -->
+    <SetProperty Id="CARemoveTrustStore" Before="CARemoveTrustStore" Sequence="execute"
+        Value="&quot;[System64Folder]certutil.exe&quot; -delstore Root &quot;!(loc.CAName)&quot;">
+        Installed AND NOT REINSTALL
+    </SetProperty>
     <CustomAction
       Id="CARemoveTrustStore"
-      Directory="INSTALLDIR"
-      ExeCommand='[System64Folder]certutil.exe -delstore Root "!(loc.CAName)"'
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
       Execute="deferred"
-      Impersonate="no"
-      Return="check" />
+      Impersonate="no" Return="ignore" />
+  </Fragment>
+
+  <!-- =============================================================
+    CRL trust store actions — WixQuietExec pattern (BUG-CRL-001)
+
+    Schannel requires the CRL in the system store — the file:// CDP
+    in the leaf cert is not sufficient on its own for revocation
+    checking. Each deferred action has a companion SetProperty that
+    resolves MSI properties into CustomActionData while the session
+    is still in immediate context. The deferred action reads
+    CustomActionData via WixQuietExec.
+    ============================================================= -->
+
+  <Fragment>
+    <!-- CAInstallCRL: add CRL to machine trust store.
+         Return="check": genuine failures must not be swallowed. -->
+    <SetProperty Id="CAInstallCRL" Before="CAInstallCRL" Sequence="execute"
+        Value="&quot;[System64Folder]certutil.exe&quot; -addstore Root &quot;[PROGRAMDATADIR]ca.crl&quot;">
+        NOT Installed
+    </SetProperty>
+    <CustomAction
+      Id="CAInstallCRL"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
+      Execute="deferred"
+      Impersonate="no" Return="check" />
   </Fragment>
 
   <Fragment>
-    <!-- CA removal CustomAction for rollback (if install fails after CA added) -->
+    <!-- CARemoveCRL: remove CRL from trust store on uninstall.
+         Return="ignore" — uninstall should not fail if CRL already absent. -->
+    <SetProperty Id="CARemoveCRL" Before="CARemoveCRL" Sequence="execute"
+        Value="&quot;[System64Folder]certutil.exe&quot; -delstore Root &quot;!(loc.CAName)&quot;">
+        Installed AND NOT REINSTALL
+    </SetProperty>
+    <CustomAction
+      Id="CARemoveCRL"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
+      Execute="deferred"
+      Impersonate="no" Return="ignore" />
+  </Fragment>
+
+  <Fragment>
+    <!-- CARollbackTrustStore: remove CA cert from trust store if install fails.
+         SetProperty runs in immediate context (before CAInstallTrustStore),
+         capturing properties while they are still available for rollback. -->
+    <SetProperty Id="CARollbackTrustStore" Before="CAInstallTrustStore" Sequence="execute"
+        Value="&quot;[System64Folder]certutil.exe&quot; -delstore Root &quot;!(loc.CAName)&quot;">
+        NOT Installed
+    </SetProperty>
     <CustomAction
       Id="CARollbackTrustStore"
-      Directory="INSTALLDIR"
-      ExeCommand='[System64Folder]certutil.exe -delstore Root "!(loc.CAName)"'
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
       Execute="rollback"
-      Impersonate="no"
-      Return="ignore" />
+      Impersonate="no" Return="ignore" />
   </Fragment>
 
   <Fragment>
-    <InstallExecuteSequence>
-      <!-- Generate CA (normal or unsafe based on UNSAFE_CA property).
-           After="InstallFiles" ensures the ProgramData directory (with ACL from
-           CreateFolder) exists before ca-init runs (PR-H3). -->
-      <Custom Action="CAInitNormal" After="InstallFiles">NOT Installed AND NOT UNSAFE_CA="1"</Custom>
-      <!-- SR-INSTALLER-14: block silent/quiet install for unsafe CA.
-           Interactive consent is required; only the full UI (not silent/quiet)
-           provides the QinduOptionsDlg checkbox as the consent mechanism. -->
-      <Custom Action="CAInitUnsafe" After="InstallFiles">NOT Installed AND UNSAFE_CA="1" AND (NOT UILevel=2) AND (NOT UILevel=3)</Custom>
-
-      <!-- Pre-check CA trust store existence (informational only).
-           After="CAInitUnsafe" covers both paths: when UNSAFE_CA="1", CAInitUnsafe
-           executes and CACheckTrustStore runs after it. When UNSAFE_CA!="1",
-           CAInitUnsafe is skipped, CACheckTrustStore sequences naturally after
-           CAInitNormal (both are relative to InstallFiles). -->
-      <Custom Action="CACheckTrustStore" After="CAInitUnsafe">NOT Installed</Custom>
-
-      <!-- Install CA into trust store. Runs after pre-check.
-           Merged from two condition-specific entries into one (conditions
-           are mutually exclusive and exhaust the NOT Installed space). -->
-      <Custom Action="CAInstallTrustStore" After="CACheckTrustStore">NOT Installed</Custom>
-
-      <!-- Rollback if install fails -->
-      <Custom Action="CARollbackTrustStore" Before="CAInstallTrustStore">NOT Installed</Custom>
-      <!-- Remove CA on uninstall -->
-      <Custom Action="CARemoveTrustStore" Before="RemoveFiles">Installed AND NOT REINSTALL</Custom>
-    </InstallExecuteSequence>
+    <!-- CARollbackCRL: remove CRL from trust store if install fails.
+         SetProperty runs in immediate context (before CAInstallCRL),
+         capturing properties while they are still available for rollback. -->
+    <SetProperty Id="CARollbackCRL" Before="CAInstallCRL" Sequence="execute"
+        Value="&quot;[System64Folder]certutil.exe&quot; -delstore Root &quot;!(loc.CAName)&quot;">
+        NOT Installed
+    </SetProperty>
+    <CustomAction
+      Id="CARollbackCRL"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
+      Execute="rollback"
+      Impersonate="no" Return="ignore" />
   </Fragment>
+
 </Include>

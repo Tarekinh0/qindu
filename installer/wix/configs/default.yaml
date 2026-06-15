@@ -1,0 +1,27 @@
+agent:
+  listen_addr: "127.0.0.1"
+  listen_port: 8787
+  mode: "enforce"           # monitor | enforce (ignored in sprint 0001)
+  fail_mode: "fail_open"    # fail_open | fail_closed
+
+tls:
+  ca_name: "Qindu AI Privacy CA"
+  ca_validity_years: 10
+  ca_key_algorithm: "ECDSA_P256"
+  cert_cache_enabled: true
+  upstream_validation: "system"
+
+providers:
+  chatgpt:
+    enabled: true
+    domains:
+      - "chatgpt.com"
+  claude:
+    enabled: true
+    domains:
+      - "claude.ai"
+
+logging:
+  level: "info"
+  format: "json"
+  pii_logging: false

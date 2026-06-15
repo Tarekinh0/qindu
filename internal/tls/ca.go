@@ -8,7 +8,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
+	"os"
 	"time"
 )
 
@@ -28,6 +30,11 @@ type CAStore interface {
 	// NeedsGeneration returns true if no stored CA exists.
 	NeedsGeneration() bool
 }
+
+// CRLFilename is the standard filename for the Certificate Revocation List
+// generated alongside the CA. Referenced by leaf cert CDP extensions and
+// by the ca-init subcommand when persisting the CRL to disk.
+const CRLFilename = "ca.crl"
 
 // GenerateCA creates a new ECDSA P-256 CA certificate and key.
 // The key is generated using crypto/rand (cryptographically secure PRNG).
@@ -110,4 +117,45 @@ func (ca *CA) CACertPool() *x509.CertPool {
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)
 	return pool
+}
+
+// CreateCRL generates an empty X.509 Certificate Revocation List signed by the CA.
+// The CRL contains no revoked certificates (Qindu does not revoke leaf certs —
+// they expire after 24 hours). It exists solely to provide a valid CRL Distribution
+// Point that Windows schannel can verify, preventing CRYPT_E_REVOCATION_OFFLINE.
+//
+// The CRL validity matches the CA validity (10 years by default) and is marked
+// with the same ECDSA P-256 signature algorithm as the CA certificate.
+func CreateCRL(ca *CA) ([]byte, error) {
+	if ca == nil || ca.Cert == nil || ca.Key == nil {
+		return nil, fmt.Errorf("CreateCRL: CA must be fully initialized")
+	}
+
+	thisUpdate := time.Now()
+	nextUpdate := ca.Cert.NotAfter
+
+	template := &x509.RevocationList{
+		Number:     big.NewInt(1),
+		ThisUpdate: thisUpdate,
+		NextUpdate: nextUpdate,
+	}
+
+	crlDER, err := x509.CreateRevocationList(rand.Reader, template, ca.Cert, ca.Key)
+	if err != nil {
+		return nil, fmt.Errorf("CreateCRL: signing revocation list: %w", err)
+	}
+
+	return crlDER, nil
+}
+
+// SaveCRL writes a DER-encoded CRL to the given file path with restricted
+// permissions (0600 — owner read/write only). The parent directory must
+// already exist; callers should use os.MkdirAll before invoking SaveCRL.
+// The path should be an absolute path to the file (e.g.,
+// C:\ProgramData\Qindu\ca.crl on Windows).
+func SaveCRL(crlDER []byte, path string) error {
+	if err := os.WriteFile(path, crlDER, 0600); err != nil {
+		return fmt.Errorf("SaveCRL: writing to %s: %w", path, err)
+	}
+	return nil
 }

@@ -9,28 +9,58 @@
     3. Remove firewall rules (handled by firewall.wxs)
     4. Remove registry keys (handled by component uninstall)
     5. Remove program files (handled by component uninstall)
-    6. Optionally remove ProgramData (conditionally, only if DELETEDATA=1)
+    6. Optionally remove ProgramData (WixQuietExec64 deferred CA, DELETEDATA=1 only)
     7. Remove INSTALLDIR (always — unconditionally clean Program Files on uninstall)
 
   DPO R5: DELETEDATA must be unchecked by default. The checkbox in
-  dialogs.wxs controls this property. RemoveFolderEx only fires when
-  DELETEDATA="1".
+  dialogs.wxs controls this property. Cleanup only fires when
+  DELETEDATA="1" at uninstall time.
 
   SR-INSTALLER-7: conditional on explicit opt-in only.
 
-  RemoveFolderEx uses the Windows Installer API directly, handles locked
-  files gracefully, integrates with MSI rollback, and eliminates the
-  command-injection surface of shelling out to cmd.exe.
+  Fix (Round 3): Replaced component-based RemoveFolderEx with WixQuietExec64
+  deferred custom action. The component-based approach with <Condition>
+  never fired because the component was never "installed" (condition only
+  true during uninstall, not install). The deferred CA evaluates
+  DELETEDATA=1 at uninstall time when the property is present on the
+  command line.
   -->
+
+  <!-- DELETEDATA cleanup: deferred custom action gated on property at
+       uninstall time. Uses WixQuietExec64 for 64-bit process execution.
+       Runs cmd.exe /c rmdir /s /q to recursively remove the ProgramData
+       directory. Return="ignore" so uninstall succeeds even if files are
+       locked or the directory is already gone. -->
   <Fragment>
-    <!-- Conditional: remove ProgramData only if user opted in -->
+    <SetProperty Id="CleanupProgramDataCmd" Before="CleanupProgramDataCmd" Sequence="execute"
+        Value="&quot;cmd.exe&quot; /c rmdir /s /q &quot;[PROGRAMDATADIR]&quot;">
+        Installed AND DELETEDATA="1"
+    </SetProperty>
+    <CustomAction
+      Id="CleanupProgramDataCmd"
+      BinaryKey="WixCA"
+      DllEntry="WixQuietExec64"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+  </Fragment>
+
+  <!--
+  OBSOLETE (Round 3): Component-based RemoveFolderEx for ProgramData.
+  Replaced by WixQuietExec64 deferred CA above. Kept commented for
+  reference.
+
+  <Fragment>
     <DirectoryRef Id="PROGRAMDATADIR">
       <Component Id="CleanupProgramDataDir" Guid="{A0984B04-924B-4E0F-A26B-778DA94F9738}" Win64="yes">
         <Condition>DELETEDATA="1"</Condition>
         <util:RemoveFolderEx Id="CleanupProgramDataDirEx" On="uninstall" Property="PROGRAMDATADIR" />
       </Component>
     </DirectoryRef>
+  </Fragment>
+  -->
 
+  <Fragment>
     <!-- Unconditional: always clean INSTALLDIR on uninstall (PR-H4).
          MSI component uninstall removes tracked files, but RemoveFolderEx
          ensures orphaned files (crash dumps, .tmp, user-placed files) are
@@ -44,7 +74,6 @@
 
   <Fragment>
     <ComponentGroup Id="CleanupComponents">
-      <ComponentRef Id="CleanupProgramDataDir" />
       <ComponentRef Id="CleanupInstallDir" />
     </ComponentGroup>
   </Fragment>

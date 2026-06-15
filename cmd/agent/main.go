@@ -122,6 +122,23 @@ func runCAInit(args []string) int {
 		return 1
 	}
 
+	// Generate and save CRL for schannel revocation checking (BUG-004 fix).
+	// The CRL is empty (no certs revoked) and signed by the CA. It lives at
+	// C:\ProgramData\Qindu\ca.crl and is referenced by leaf certs via a
+	// file:// CDP extension. Windows schannel reads this CRL from disk to
+	// verify the leaf cert has not been revoked — since it's empty, the check
+	// passes and the TLS handshake proceeds.
+	crlDER, err := qinduTls.CreateCRL(ca)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to create CRL: %v\n", err)
+		return 1
+	}
+	crlPath := filepath.Join(caDir, qinduTls.CRLFilename)
+	if err := qinduTls.SaveCRL(crlDER, crlPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to save CRL: %v\n", err)
+		return 1
+	}
+
 	// SAFETY: No PII in log output — prints only x509 certificate metadata
 	// (Subject CommonName, NotAfter date, SerialNumber) and the file paths
 	// where the CA is stored. CA private key material is never printed.

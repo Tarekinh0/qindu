@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Include xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
-    <!-- Standard Program Files directory for the agent binary and default config -->
+    <!-- Agent binary and service (INSTALLDIR = %PROGRAMFILES%\Qindu\) -->
     <DirectoryRef Id="INSTALLDIR">
       <Component Id="AgentExeComponent" Guid="*" Win64="yes">
-        <File Id="AgentExe" Name="agent.exe" Source="agent.exe" KeyPath="yes" />
+        <File Id="AgentExe" Name="agent.exe" Source="qindu-agent.exe" KeyPath="yes" />
         <ServiceInstall
           Id="QinduServiceInstall"
           Name="!(loc.ServiceName)"
@@ -23,7 +23,10 @@
           Remove="uninstall"
           Wait="yes" />
       </Component>
+    </DirectoryRef>
 
+    <!-- Default config (ConfigsDir = %PROGRAMFILES%\Qindu\configs\) -->
+    <DirectoryRef Id="ConfigsDir">
       <Component Id="DefaultConfigComponent" Guid="*" Win64="yes">
         <File Id="DefaultConfig" Name="default.yaml" Source="configs\default.yaml" KeyPath="yes" />
       </Component>
