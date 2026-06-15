@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -95,19 +97,17 @@ func TestParseConfig_InvalidYAML(t *testing.T) {
 	}
 }
 
-// TestParseConfig_EmptyYAML verifies that empty YAML returns defaults.
+// TestParseConfig_EmptyYAML verifies that empty YAML is rejected by validation
+// (ParseConfig now validates internally).
 func TestParseConfig_EmptyYAML(t *testing.T) {
 	emptyYAML := []byte(``)
 
 	cfg, err := ParseConfig(emptyYAML)
-	if err != nil {
-		t.Fatalf("ParseConfig failed: %v", err)
-	}
-
-	// Empty config validation will fail on missing listen_addr
-	err = cfg.Validate()
 	if err == nil {
 		t.Error("expected validation error for empty config, got nil")
+	}
+	if cfg != nil {
+		t.Error("expected nil config on error")
 	}
 }
 
@@ -287,5 +287,151 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.TLS.UpstreamValidation != "system" {
 		t.Error("default upstream_validation must be 'system'")
+	}
+}
+
+// TestMergeFileOverride_ProvidersPreserved verifies PR-002:
+// Merging an override that only specifies one provider must not delete
+// other providers already present in the base config.
+func TestMergeFileOverride_ProvidersPreserved(t *testing.T) {
+	// Create a base config with two providers
+	cfg := DefaultConfig()
+	cfg.Providers = ProvidersConfig{
+		"chatgpt": {Enabled: true, Domains: []string{"chatgpt.com"}},
+		"claude":  {Enabled: true, Domains: []string{"claude.ai"}},
+	}
+
+	// Write an override file that only mentions chatgpt with different domains
+	tmpDir := t.TempDir()
+	overridePath := filepath.Join(tmpDir, "override.yaml")
+	overrideYAML := []byte(`
+providers:
+  chatgpt:
+    enabled: true
+    domains:
+      - "chatgpt.com"
+      - "openai.com"
+`)
+	if err := os.WriteFile(overridePath, overrideYAML, 0644); err != nil {
+		t.Fatalf("failed to write override file: %v", err)
+	}
+
+	// Merge the override
+	if err := cfg.MergeFileOverride(overridePath); err != nil {
+		t.Fatalf("MergeFileOverride failed: %v", err)
+	}
+
+	// Verify chatgpt was updated
+	chatgpt, ok := cfg.Providers["chatgpt"]
+	if !ok {
+		t.Fatal("chatgpt provider should still exist after merge")
+	}
+	if len(chatgpt.Domains) != 2 {
+		t.Errorf("chatgpt should have 2 domains after override, got %d: %v", len(chatgpt.Domains), chatgpt.Domains)
+	}
+
+	// Verify claude was NOT deleted (this is the bug fix)
+	claude, ok := cfg.Providers["claude"]
+	if !ok {
+		t.Fatal("claude provider was silently deleted by MergeFileOverride (PR-002 regression)")
+	}
+	if !claude.Enabled {
+		t.Error("claude should still be enabled")
+	}
+	if len(claude.Domains) != 1 || claude.Domains[0] != "claude.ai" {
+		t.Errorf("claude domains should be unchanged, got %v", claude.Domains)
+	}
+}
+
+// TestMergeFileOverride_AgentFieldMerged verifies that agent fields
+// present in the override are applied without disturbing others.
+func TestMergeFileOverride_AgentFieldMerged(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Mode = "enforce"
+	cfg.Agent.FailMode = "fail_open"
+
+	tmpDir := t.TempDir()
+	overridePath := filepath.Join(tmpDir, "override.yaml")
+	overrideYAML := []byte(`
+agent:
+  listen_port: 9999
+  mode: "detect"
+`)
+	if err := os.WriteFile(overridePath, overrideYAML, 0644); err != nil {
+		t.Fatalf("failed to write override file: %v", err)
+	}
+
+	if err := cfg.MergeFileOverride(overridePath); err != nil {
+		t.Fatalf("MergeFileOverride failed: %v", err)
+	}
+
+	if cfg.Agent.ListenPort != 9999 {
+		t.Errorf("listen_port should be overridden to 9999, got %d", cfg.Agent.ListenPort)
+	}
+	if cfg.Agent.Mode != "detect" {
+		t.Errorf("mode should be overridden to detect, got %s", cfg.Agent.Mode)
+	}
+	// These should be unchanged
+	if cfg.Agent.FailMode != "fail_open" {
+		t.Errorf("fail_mode should remain fail_open, got %s", cfg.Agent.FailMode)
+	}
+}
+
+// TestMergeFileOverride_NewProviderAdded verifies that a new provider
+// in the override is added to the map without removing existing ones.
+func TestMergeFileOverride_NewProviderAdded(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Providers = ProvidersConfig{
+		"chatgpt": {Enabled: true, Domains: []string{"chatgpt.com"}},
+	}
+
+	tmpDir := t.TempDir()
+	overridePath := filepath.Join(tmpDir, "override.yaml")
+	overrideYAML := []byte(`
+providers:
+  gemini:
+    enabled: true
+    domains:
+      - "gemini.google.com"
+`)
+	if err := os.WriteFile(overridePath, overrideYAML, 0644); err != nil {
+		t.Fatalf("failed to write override file: %v", err)
+	}
+
+	if err := cfg.MergeFileOverride(overridePath); err != nil {
+		t.Fatalf("MergeFileOverride failed: %v", err)
+	}
+
+	// Original provider still present
+	if _, ok := cfg.Providers["chatgpt"]; !ok {
+		t.Fatal("chatgpt provider was deleted by merge")
+	}
+	// New provider was added
+	if _, ok := cfg.Providers["gemini"]; !ok {
+		t.Fatal("gemini provider was not added by merge")
+	}
+}
+
+// TestMergeFileOverride_MissingFile verifies error handling for nonexistent override.
+func TestMergeFileOverride_MissingFile(t *testing.T) {
+	cfg := DefaultConfig()
+	err := cfg.MergeFileOverride("/nonexistent/path/override.yaml")
+	if err == nil {
+		t.Error("expected error for missing override file")
+	}
+}
+
+// TestMergeFileOverride_InvalidYAML verifies error handling for bad YAML in override.
+func TestMergeFileOverride_InvalidYAML(t *testing.T) {
+	cfg := DefaultConfig()
+	tmpDir := t.TempDir()
+	overridePath := filepath.Join(tmpDir, "override.yaml")
+	if err := os.WriteFile(overridePath, []byte(`this is not: [valid: yaml`), 0644); err != nil {
+		t.Fatalf("failed to write override file: %v", err)
+	}
+
+	err := cfg.MergeFileOverride(overridePath)
+	if err == nil {
+		t.Error("expected error for invalid override YAML")
 	}
 }

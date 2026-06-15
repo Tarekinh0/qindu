@@ -69,11 +69,17 @@ func LoadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// ParseConfig parses YAML bytes into a Config (used for tests).
+// ParseConfig parses YAML bytes into a validated Config.
+// Note: LoadConfig is preferred for production use (reads from file).
+// ParseConfig is exported for test and programmatic use; it validates
+// after parsing to prevent invalid configs from being created.
 func ParseConfig(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	return &cfg, nil
 }
@@ -113,14 +119,20 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// AllAIDomains returns a flat list of all enabled AI provider domains.
+// AllAIDomains returns a flat, deduplicated list of all enabled AI provider domains.
 func (c *Config) AllAIDomains() []string {
+	seen := make(map[string]bool)
 	var domains []string
 	for _, provider := range c.Providers {
 		if !provider.Enabled {
 			continue
 		}
-		domains = append(domains, provider.Domains...)
+		for _, d := range provider.Domains {
+			if !seen[d] {
+				seen[d] = true
+				domains = append(domains, d)
+			}
+		}
 	}
 	return domains
 }
@@ -133,6 +145,82 @@ func (c *Config) ListenAddress() string {
 // UpstreamInsecure returns true if upstream TLS validation is disabled.
 func (c *Config) UpstreamInsecure() bool {
 	return c.TLS.UpstreamValidation == "insecure"
+}
+
+// MergeFileOverride applies a shallow override from a YAML file on top of the
+// current config. Only fields present in the override file are modified; all
+// other fields retain their current values. The merged result is validated.
+//
+// IMPORTANT: Unmarshaling directly into the receiver would replace entire maps
+// (e.g., providers) instead of merging individual entries. We unmarshal into a
+// temporary Config, then merge each section field-by-field.
+func (c *Config) MergeFileOverride(overridePath string) error {
+	data, err := os.ReadFile(overridePath)
+	if err != nil {
+		return fmt.Errorf("reading override file: %w", err)
+	}
+
+	var override Config
+	if err := yaml.Unmarshal(data, &override); err != nil {
+		return fmt.Errorf("parsing override config: %w", err)
+	}
+
+	// Merge agent settings (only override non-zero values)
+	if override.Agent.ListenAddr != "" {
+		c.Agent.ListenAddr = override.Agent.ListenAddr
+	}
+	if override.Agent.ListenPort != 0 {
+		c.Agent.ListenPort = override.Agent.ListenPort
+	}
+	if override.Agent.Mode != "" {
+		c.Agent.Mode = override.Agent.Mode
+	}
+	if override.Agent.FailMode != "" {
+		c.Agent.FailMode = override.Agent.FailMode
+	}
+
+	// Merge TLS settings
+	if override.TLS.CAName != "" {
+		c.TLS.CAName = override.TLS.CAName
+	}
+	if override.TLS.CAValidityYears != 0 {
+		c.TLS.CAValidityYears = override.TLS.CAValidityYears
+	}
+	if override.TLS.CAKeyAlgorithm != "" {
+		c.TLS.CAKeyAlgorithm = override.TLS.CAKeyAlgorithm
+	}
+	// CertCacheEnabled: yaml.v3 defaults bool to false, so we cannot distinguish
+	// "not present" from "explicitly false". The override struct keeps the
+	// zero-value, so we skip it to avoid forcing false on every merge.
+	// If explicit bool override is needed, use a *bool pointer field.
+	if override.TLS.UpstreamValidation != "" {
+		c.TLS.UpstreamValidation = override.TLS.UpstreamValidation
+	}
+
+	// Merge providers — add/update individual entries, do not replace the entire map
+	for name, prov := range override.Providers {
+		if c.Providers == nil {
+			c.Providers = make(ProvidersConfig)
+		}
+		c.Providers[name] = prov
+	}
+
+	// Merge logging settings
+	if override.Logging.Level != "" {
+		c.Logging.Level = override.Logging.Level
+	}
+	if override.Logging.Format != "" {
+		c.Logging.Format = override.Logging.Format
+	}
+	// PIILogging: same bool zero-value problem as CertCacheEnabled — skipped.
+	// If the override YAML does not contain "pii_logging", the field stays false
+	// (zero value) and we do not overwrite the receiver's value.
+
+	// Re-validate after merge
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("invalid config after override merge: %w", err)
+	}
+	return nil
 }
 
 // DefaultConfig returns a Config with safe defaults.
