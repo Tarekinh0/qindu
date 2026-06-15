@@ -39,16 +39,23 @@ func (cw *countingWriter) Write(p []byte) (int, error) {
 //  5. Pass through Interceptor.InterceptResponse (NoOp for this sprint)
 //  6. Write complete response (headers + body) to browser via Response.Write
 //
+// IMPORTANT: browserReader and upstreamReader must be created ONCE and reused
+// across keep-alive iterations. Creating new bufio.Reader on each call would
+// discard buffered bytes belonging to subsequent HTTP requests, causing data
+// corruption (see PR-003).
+//
 // A countingWriter wraps the upstream writer so byte counts are accurate
 // regardless of Content-Length presence (handles chunked/streaming).
 func forwardRequestAndResponse(
-	browserConn io.ReadWriter,
-	upstreamConn io.ReadWriter,
+	browserReader *bufio.Reader,
+	browserWriter io.Writer,
+	upstreamReader *bufio.Reader,
+	upstreamWriter io.Writer,
 	interceptor Interceptor,
 	stats *forwardStats,
 ) (int, error) {
-	// 1. Read request from browser
-	req, err := http.ReadRequest(bufio.NewReader(browserConn))
+	// 1. Read request from browser (reuse reader to preserve buffered bytes)
+	req, err := http.ReadRequest(browserReader)
 	if err != nil {
 		return 0, fmt.Errorf("reading request from browser: %w", err)
 	}
@@ -64,13 +71,13 @@ func forwardRequestAndResponse(
 
 	// 3. Write complete request (headers + body) to upstream, counting bytes.
 	// The countingWriter captures actual bytes written including chunked encoding.
-	upWriter := &countingWriter{w: upstreamConn, counted: &stats.bytesIn}
+	upWriter := &countingWriter{w: upstreamWriter, counted: &stats.bytesIn}
 	if err := modifiedReq.Write(upWriter); err != nil {
 		return 0, fmt.Errorf("writing request to upstream: %w", err)
 	}
 
-	// 4. Read response from upstream
-	resp, err := http.ReadResponse(bufio.NewReader(upstreamConn), modifiedReq)
+	// 4. Read response from upstream (reuse reader to preserve buffered bytes)
+	resp, err := http.ReadResponse(upstreamReader, modifiedReq)
 	if err != nil {
 		return 0, fmt.Errorf("reading response from upstream: %w", err)
 	}
@@ -85,8 +92,8 @@ func forwardRequestAndResponse(
 	}
 
 	// 6. Write complete response (headers + body) to browser, counting bytes.
-	browserWriter := &countingWriter{w: browserConn, counted: &stats.bytesOut}
-	if err := modifiedResp.Write(browserWriter); err != nil {
+	bw := &countingWriter{w: browserWriter, counted: &stats.bytesOut}
+	if err := modifiedResp.Write(bw); err != nil {
 		return modifiedResp.StatusCode, fmt.Errorf("writing response to browser: %w", err)
 	}
 

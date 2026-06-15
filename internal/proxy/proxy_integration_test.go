@@ -48,7 +48,7 @@ func newTestHarness(t *testing.T, aiDomains []string) *testHarness {
 	h := &testHarness{t: t}
 
 	// 1. Create a test CA
-	ca, _, err := qinduTls.GenerateCA("Qindu Test CA", 10)
+	ca, _, err := qinduTls.GenerateCA("Qindu Test CA", 10, nil)
 	if err != nil {
 		t.Fatalf("failed to generate test CA: %v", err)
 	}

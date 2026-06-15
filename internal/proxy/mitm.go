@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -118,8 +119,12 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 
 	// 4. Forward HTTP requests through the interceptor pipeline
 	// Handle multiple requests on the same connection (HTTP keep-alive)
+	// Create buffered readers ONCE to avoid discarding bytes between iterations.
+	browserReader := bufio.NewReader(browserConn)
+	upstreamReader := bufio.NewReader(upstreamConn)
+	lastStatus := 200
 	for {
-		status, err := forwardRequestAndResponse(browserConn, upstreamConn, p.interceptor, stats)
+		status, err := forwardRequestAndResponse(browserReader, browserConn, upstreamReader, upstreamConn, p.interceptor, stats)
 		if err != nil {
 			if err != io.EOF {
 				p.logger.Debug("forward error",
@@ -127,9 +132,14 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 					"error", err,
 				)
 			}
+			// Capture the status from the failed request when available
+			if status != 0 {
+				lastStatus = status
+			}
 			break
 		}
 
+		lastStatus = status
 		// Only log connection metrics (no bodies, no headers)
 		p.logger.Debug("request processed",
 			"host", host,
@@ -141,7 +151,7 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 	logging.LogConnection(p.logger, logging.ConnectionLogEntry{
 		Timestamp:  logging.NowUTC(),
 		Host:       host,
-		Status:     200,
+		Status:     lastStatus,
 		DurationMs: logging.DurationMs(startTime),
 		BytesIn:    stats.bytesIn.Load(),
 		BytesOut:   stats.bytesOut.Load(),
