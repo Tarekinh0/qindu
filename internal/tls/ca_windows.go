@@ -124,7 +124,7 @@ func dpapiEncrypt(data []byte) ([]byte, error) {
 		uintptr(unsafe.Pointer(&outBlob)),
 	)
 	if r1 == 0 {
-		return nil, fmt.Errorf("CryptProtectData failed: %v", err)
+		return nil, fmt.Errorf("CryptProtectData failed: %w", err)
 	}
 	defer procLocalFree.Call(uintptr(unsafe.Pointer(outBlob.pbData)))
 
@@ -158,7 +158,7 @@ func dpapiDecrypt(data []byte) ([]byte, error) {
 		uintptr(unsafe.Pointer(&outBlob)),
 	)
 	if r1 == 0 {
-		return nil, fmt.Errorf("CryptUnprotectData failed: %v", err)
+		return nil, fmt.Errorf("CryptUnprotectData failed: %w", err)
 	}
 	defer procLocalFree.Call(uintptr(unsafe.Pointer(outBlob.pbData)))
 

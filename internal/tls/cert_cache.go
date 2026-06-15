@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // defaultMaxCacheSize is the maximum number of certificates in the cache.
@@ -40,13 +41,17 @@ func NewCertCacheWithSize(maxSize int) *CertCache {
 }
 
 // Get retrieves a certificate from the cache by hostname.
-// Returns the certificate and true if found, or nil and false.
-// This method acquires a read lock.
+// Returns the certificate and true if found and not expired, or nil and false.
+// This method acquires a read lock. Expired certificates are treated as
+// cache misses (lazy TTL eviction).
 func (c *CertCache) Get(host string) (*tls.Certificate, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	cert, ok := c.cache[host]
+	if ok && cert.Leaf != nil && time.Now().After(cert.Leaf.NotAfter) {
+		return nil, false
+	}
 	return cert, ok
 }
 
@@ -75,9 +80,16 @@ func (c *CertCache) GetOrCreate(host string, ca *CA) (*tls.Certificate, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Double-check after acquiring write lock (another goroutine may have added it)
+	// Double-check after acquiring write lock (another goroutine may have added it).
+	// Must inline the TTL check since we already hold the write lock;
+	// calling Get() here would deadlock (Get acquires RLock).
 	if cert, ok := c.cache[host]; ok {
-		return cert, nil
+		if cert.Leaf != nil && time.Now().After(cert.Leaf.NotAfter) {
+			// Expired cert found during double-check — evict and regenerate.
+			delete(c.cache, host)
+		} else {
+			return cert, nil
+		}
 	}
 
 	// Generate new certificate

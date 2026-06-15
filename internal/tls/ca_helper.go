@@ -34,7 +34,7 @@ func CreateOrLoadCA(store CAStore, commonName string, validityYears int, logger 
 		"algorithm", "ECDSA_P256",
 	)
 
-	ca, keyPEM, err := GenerateCA(commonName, validityYears)
+	ca, keyPEM, err := GenerateCA(commonName, validityYears, nil)
 	if err != nil {
 		return nil, fmt.Errorf("generating CA: %w", err)
 	}
@@ -75,7 +75,10 @@ func parseCAFromPEM(certPEM, keyPEM []byte) (*CA, error) {
 	}
 
 	// Verify key matches certificate (compare public keys)
-	certPub := cert.PublicKey.(*ecdsa.PublicKey)
+	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("CA key is not ECDSA P-256 (got %T), file may be corrupted", cert.PublicKey)
+	}
 	if certPub.X.Cmp(key.PublicKey.X) != 0 || certPub.Y.Cmp(key.PublicKey.Y) != 0 {
 		return nil, fmt.Errorf("CA key does not match certificate")
 	}

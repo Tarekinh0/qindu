@@ -8,7 +8,7 @@ import (
 // TestCertCache_GetSet verifies basic get/put operations.
 func TestCertCache_GetSet(t *testing.T) {
 	cache := NewCertCache()
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestCertCache_GetSet(t *testing.T) {
 // TestCertCache_GetOrCreate verifies lazy generation and caching.
 func TestCertCache_GetOrCreate(t *testing.T) {
 	cache := NewCertCache()
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestCertCache_GetOrCreate(t *testing.T) {
 // TestCertCache_ConcurrentReadWrite verifies SR8/SEC-T5: thread safety under concurrent access.
 func TestCertCache_ConcurrentReadWrite(t *testing.T) {
 	cache := NewCertCache()
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestCertCache_ConcurrentReadWrite(t *testing.T) {
 // TestCertCache_ConcurrentSameKey verifies concurrent writes to the same key are safe.
 func TestCertCache_ConcurrentSameKey(t *testing.T) {
 	cache := NewCertCache()
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestCertCache_ConcurrentSameKey(t *testing.T) {
 // TestCertCache_Len verifies the Len method.
 func TestCertCache_Len(t *testing.T) {
 	cache := NewCertCache()
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestCertCache_Len(t *testing.T) {
 // TestCertCache_Clear verifies the Clear method.
 func TestCertCache_Clear(t *testing.T) {
 	cache := NewCertCache()
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}

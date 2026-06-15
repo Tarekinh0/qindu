@@ -32,7 +32,10 @@ type CAStore interface {
 // GenerateCA creates a new ECDSA P-256 CA certificate and key.
 // The key is generated using crypto/rand (cryptographically secure PRNG).
 // The certificate is self-signed with the given common name and validity period.
-func GenerateCA(commonName string, validityYears int) (*CA, []byte, error) {
+// If permittedDNSDomains is non-empty, the resulting CA certificate will include
+// an X.509 Name Constraints extension (OID 2.5.29.30) restricting the CA to
+// those DNS subtrees. The extension is marked non-critical for browser compatibility.
+func GenerateCA(commonName string, validityYears int, permittedDNSDomains []string) (*CA, []byte, error) {
 	// Generate ECDSA P-256 key pair using crypto/rand
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -58,7 +61,13 @@ func GenerateCA(commonName string, validityYears int) (*CA, []byte, error) {
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		MaxPathLenZero:        true,
+		MaxPathLenZero:        true, // CA can only sign leaf certificates, not intermediate CAs
+	}
+
+	// Add Name Constraints if domains are specified (non-critical for compatibility).
+	if len(permittedDNSDomains) > 0 {
+		template.PermittedDNSDomains = permittedDNSDomains
+		template.PermittedDNSDomainsCritical = false
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)

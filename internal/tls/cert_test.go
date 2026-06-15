@@ -8,7 +8,7 @@ import (
 
 // TestGenerateLeafCert_SAN verifies SAN contains domain and wildcard.
 func TestGenerateLeafCert_SAN(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestGenerateLeafCert_SAN(t *testing.T) {
 
 // TestGenerateLeafCert_Algorithm verifies leaf cert uses ECDSA P-256.
 func TestGenerateLeafCert_Algorithm(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestGenerateLeafCert_Algorithm(t *testing.T) {
 
 // TestGenerateLeafCert_Validity verifies leaf cert has short validity (24h).
 func TestGenerateLeafCert_Validity(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestGenerateLeafCert_Validity(t *testing.T) {
 
 // TestGenerateLeafCert_SignedByCA verifies the leaf cert is signed by the CA.
 func TestGenerateLeafCert_SignedByCA(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestGenerateLeafCert_SignedByCA(t *testing.T) {
 
 // TestGenerateLeafCert_WildcardValidation verifies wildcard SAN works for verification.
 func TestGenerateLeafCert_WildcardValidation(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestGenerateLeafCert_WildcardValidation(t *testing.T) {
 
 // TestGenerateLeafCert_NotCA verifies leaf cert is not a CA.
 func TestGenerateLeafCert_NotCA(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestGenerateLeafCert_NotCA(t *testing.T) {
 
 // TestGenerateLeafCert_ServerAuth verifies leaf cert has ServerAuth EKU.
 func TestGenerateLeafCert_ServerAuth(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestGenerateLeafCert_ServerAuth(t *testing.T) {
 
 // TestGenerateLeafCert_TLSCertFormat verifies the generated cert can be used in tls.Config.
 func TestGenerateLeafCert_TLSCertFormat(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestGenerateLeafCert_TLSCertFormat(t *testing.T) {
 
 // TestGenerateLeafCert_UniqueSerialNumbers verifies each leaf cert has unique serial.
 func TestGenerateLeafCert_UniqueSerialNumbers(t *testing.T) {
-	ca, _, err := GenerateCA("Test CA", 1)
+	ca, _, err := GenerateCA("Test CA", 1, nil)
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
