@@ -28,7 +28,7 @@ items:
 
 - id: QINDU-0002
   title: "Installer Windows + Service"
-  status: DRAFT
+  status: DONE
   adr_ref: [ADR-003, ADR-006, ADR-010]
   domains: [installer, windows-service, trust-store, chrome-policy, edge-policy, firewall]
   dependencies: [QINDU-0001]
@@ -36,7 +36,12 @@ items:
   human_inputs_required: ["signature de code Windows (certificat)"]
   forbidden: [PII detection, tokenization, vault]
   acceptance_evidence: "Installation MSI : service Windows créé, CA dans le trust store, policies Chrome/Edge appliquées, PAC configurée, QUIC désactivé, firewall loopback en place, /health répond."
-  notes: "Wix Toolset pour MSI. Élévation admin requise."
+  notes: "Wix Toolset pour MSI. Élévation admin requise. Désinstallation incluse (checkbox suppression données)."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0002/"
+  closure_date: "2026-06-15"
+  go_version: "1.26"
+  test_count: 148
+  bugs_fixed: 30
 
 - id: QINDU-0003
   title: "Désinstallation propre"

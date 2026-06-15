@@ -46,6 +46,8 @@ The workflow is strictly sequential and file-based within the sprint folder (`do
    - *If blocked, the sprint stops and `qindu-orchestrator` arbitrates.*
 3. **Implementation**: `qindu-devsecops` implements the story (code, tests) and writes `dev-notes.md` (factual, technical).
 4. **Peer Review**: `qindu-peer-reviewer` reviews the implementation against Clean Code, SOLID, Go Proverbs, and other design standards. Produces `peer-review.md` with scorecard, critical findings, and verdict. If REJECT or FIX_AND_RESUBMIT with critical bugs, the sprint returns to step 3 for fixes.
+
+   **Blank-slate rule**: After each DevSecOps fix cycle, the peer reviewer MUST be invoked as a fresh, independent session. The peer reviewer receives ONLY `story.md` + source code — no `dev-notes.md`, no `dpo-requirements.md`, no `ciso-requirements.md`, no prior `peer-review.md`. This eliminates confirmation bias from previous reviewers. Loop step 3→4 indefinitely until MERGE_READY is achieved.
 5. **Review**:
    - `qindu-ciso` verifies the implementation and writes `ciso-review.md`.
    - `qindu-dpo` verifies the implementation and writes `dpo-review.md`.
