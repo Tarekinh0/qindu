@@ -34,11 +34,6 @@ formatters:
   # No opinionated formatters — gofmt is enforced separately in CI.
   enable: []
 
-exclusions:
-  paths:
-    - vendor
-    - testdata
-
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
