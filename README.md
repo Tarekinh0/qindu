@@ -1,4 +1,4 @@
-# Qindu — AI Privacy Proxy
+# Qindu -- AI Privacy Proxy
 
 > **Use ChatGPT, Claude, and Gemini without sending personal data in clear text.**
 
