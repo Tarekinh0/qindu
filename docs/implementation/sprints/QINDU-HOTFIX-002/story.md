@@ -1,7 +1,7 @@
 # QINDU-HOTFIX-002: Fix golangci-lint failures blocking CI
 
 ## Status
-DRAFT
+DONE
 
 ## Context
 The CI pipeline (QINDU-0004) is failing because golangci-lint v2.7.2 reports 47 code quality issues across the codebase. The `.golangci.yml` config was fixed (removed invalid `exclusions` key), unblocking the linter, which now reveals pre-existing code issues that were previously masked.

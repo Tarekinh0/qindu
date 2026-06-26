@@ -1,6 +1,6 @@
 # QINDU-HOTFIX-001: MSI Installer + TLS Leaf Cert Bugs
 
-**Status**: IN_PROGRESS  
+**Status**: DONE  
 **Type**: Hotfix  
 **Affected Sprints**: QINDU-0001 (TLS), QINDU-0002 (Installer)  
 **Source**: QEMU VM integration test — `qemu-test-report.md`

@@ -56,12 +56,13 @@ items:
   gates_required: [CISO, QA, Release]
   human_inputs_required: []
   forbidden: []
-  acceptance_evidence: "MSI installer builds successfully, CRL handling passes tests, CI pipeline stabilizes."
-  notes: "Hotfix for post-QINDU-0002 issues: MSI build fixes, CRL parsing fixes for Go 1.26 compatibility."
+  acceptance_evidence: "MSI installer builds successfully, CRL handling passes tests, CI pipeline stabilizes. QEMU VM: all 11 acceptance criteria PASS."
+  notes: "Hotfix for post-QINDU-0002 issues: 6 bugs fixed (4 original CRITICAL: 32-bit MSI, unsequenced custom actions, service/CA ordering, missing revocation extensions; 2 Round-3: CRL import path, DELETEDATA quoting). 5 peer review rounds to MERGE_READY."
   last_sprint_folder: "docs/implementation/sprints/QINDU-HOTFIX-001/"
   closure_date: "2026-06-15"
   go_version: "1.26"
-  bugs_fixed: 2
+  test_count: 149
+  bugs_fixed: 6
 
 - id: QINDU-HOTFIX-002
   title: "Fix 47 golangci-lint issues blocking CI"
@@ -73,11 +74,11 @@ items:
   human_inputs_required: []
   forbidden: [no new features, no ADR modifications]
   acceptance_evidence: "golangci-lint run ./... reports 0 issues. go test -race ./... passes 5/5 packages. CI fully green."
-  notes: "Hotfix: .golangci.yml exclusions key removed (invalid in v2.7.2), then 47 errcheck/shadow/fieldalignment/staticcheck/misspell issues fixed across 16 files."
+  notes: "Hotfix: .golangci.yml exclusions key removed (invalid in v2.7.2), then 50 errcheck/shadow/fieldalignment/staticcheck/misspell/deprecation issues fixed across 16 files (47 from original review + 3 Go 1.26 deprecations)."
   last_sprint_folder: "docs/implementation/sprints/QINDU-HOTFIX-002/"
-  closure_date: "2026-06-16"
+  closure_date: "2026-06-27"
   go_version: "1.26"
-  bugs_fixed: 47
+  bugs_fixed: 50
 
 - id: QINDU-0004
   title: "CI/CD Pipeline"
