@@ -45,6 +45,40 @@ items:
 
 # QINDU-0003 removed — uninstall now handled by QINDU-0002 (checkbox DELETEDATA, RemoveFolderEx, certutil -delstore)
 
+# ─── Hotfixes ───────────────────────────────────────────────────────
+
+- id: QINDU-HOTFIX-001
+  title: "MSI installer + TLS CRL fixes"
+  status: DONE
+  adr_ref: [ADR-003, ADR-006]
+  domains: [installer, tls, ci]
+  dependencies: [QINDU-0002]
+  gates_required: [CISO, QA, Release]
+  human_inputs_required: []
+  forbidden: []
+  acceptance_evidence: "MSI installer builds successfully, CRL handling passes tests, CI pipeline stabilizes."
+  notes: "Hotfix for post-QINDU-0002 issues: MSI build fixes, CRL parsing fixes for Go 1.26 compatibility."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-HOTFIX-001/"
+  closure_date: "2026-06-15"
+  go_version: "1.26"
+  bugs_fixed: 2
+
+- id: QINDU-HOTFIX-002
+  title: "Fix 47 golangci-lint issues blocking CI"
+  status: DONE
+  adr_ref: [ADR-007]
+  domains: [ci, proxy, tls, logging, policy, service, agent]
+  dependencies: [QINDU-0004]
+  gates_required: [Peer Reviewer, DevSecOps]
+  human_inputs_required: []
+  forbidden: [no new features, no ADR modifications]
+  acceptance_evidence: "golangci-lint run ./... reports 0 issues. go test -race ./... passes 5/5 packages. CI fully green."
+  notes: "Hotfix: .golangci.yml exclusions key removed (invalid in v2.7.2), then 47 errcheck/shadow/fieldalignment/staticcheck/misspell issues fixed across 16 files."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-HOTFIX-002/"
+  closure_date: "2026-06-16"
+  go_version: "1.26"
+  bugs_fixed: 47
+
 - id: QINDU-0004
   title: "CI/CD Pipeline"
   status: DONE

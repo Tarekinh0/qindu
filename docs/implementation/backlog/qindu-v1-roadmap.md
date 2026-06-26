@@ -57,14 +57,14 @@ QINDU-0001 (Proxy)
   ├── QINDU-0002 (Installer + Désinstallation)
   ├── QINDU-0004 (CI/CD)
   ├── QINDU-0005 (Moteur PII)
-  │     └── QINDU-0006 (Tokenisation)
-  │           └── QINDU-0008 (Vault)
-  │                 └── QINDU-0007 (Mode Monitor)
-  │                       └── QINDU-0009 (Mode Enforce + Rehyd non-streaming)
-  │                             ├── QINDU-0010 (Rehyd streaming)
-  │                             ├── QINDU-0011 (ChatGPT)
-  │                             │     └── QINDU-0013 (Historique)
-  │                             └── QINDU-0012 (Claude)
+  │     ├── QINDU-0006 (Tokenisation)
+  │     │     └── QINDU-0008 (Vault)
+  │     └── QINDU-0007 (Mode Monitor)
+  └── QINDU-0009 (Mode Enforce) ← needs QINDU-0007 + QINDU-0008
+        ├── QINDU-0010 (Rehyd streaming)
+        ├── QINDU-0011 (ChatGPT)
+        │     └── QINDU-0013 (Historique)
+        └── QINDU-0012 (Claude)
   ├── QINDU-0014 (Gemini)
   ├── QINDU-0015 (Fail-closed page)
   └── QINDU-0016 (Tray icon)
@@ -79,7 +79,7 @@ QINDU-0001 (Proxy)
 ## Key Milestones
 
 1. **M0 - Proxy fonctionnel**: QINDU-0001 done → le proxy tourne, CONNECT, MITM, PAC, logs
-2. **M1 - Installable**: QINDU-0002 done → installation/désinstallation Windows complète
+2. **M1 - Installable**: QINDU-0002 + QINDU-0004 done → installation/désinstallation Windows complète, CI verte (0 issues golangci-lint, 5/5 packages test pass)
 3. **M2 - PII Ready**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles
 4. **M3 - MVP Privacy**: QINDU-0008 + QINDU-0009 + QINDU-0010 done → flux complet tokenisation → réhydratation
 5. **M4 - V1 Complete**: QINDU-0011 + QINDU-0012 + QINDU-0013 done → ChatGPT et Claude supportés
