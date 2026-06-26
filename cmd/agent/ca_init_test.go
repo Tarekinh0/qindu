@@ -102,10 +102,14 @@ func TestResolveConfigPath_ProgramFiles(t *testing.T) {
 
 	// Create the expected directory and file
 	configDir := filepath.Join("/tmp/testpf", "Qindu", "configs")
-	os.MkdirAll(configDir, 0755)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
 	configFile := filepath.Join(configDir, "default.yaml")
-	os.WriteFile(configFile, []byte("agent:\n  listen_addr: 127.0.0.1\n  listen_port: 8787\n"), 0644)
-	defer os.RemoveAll("/tmp/testpf")
+	if err := os.WriteFile(configFile, []byte("agent:\n  listen_addr: 127.0.0.1\n  listen_port: 8787\n"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	defer func() { _ = os.RemoveAll("/tmp/testpf") }()
 
 	path, err := resolveConfigPath("")
 	if err != nil {
@@ -136,11 +140,15 @@ func TestResolveConfigPath_EnvVarOverProgramFiles(t *testing.T) {
 // twice produces different key material (serial, key bytes) — confirming
 // that CA regeneration does not reuse the previous CA.
 func TestCAInit_RegenerationProducesDifferentCA(t *testing.T) {
-	ca1, keyPEM1, err := qinduTls.GenerateCA("Test CA", 10, []string{"test.com"})
+	var err error
+	var ca1, ca2 *qinduTls.CA
+	var keyPEM1, keyPEM2 []byte
+
+	ca1, keyPEM1, err = qinduTls.GenerateCA("Test CA", 10, []string{"test.com"})
 	if err != nil {
 		t.Fatalf("GenerateCA (first): %v", err)
 	}
-	ca2, keyPEM2, err := qinduTls.GenerateCA("Test CA", 10, []string{"test.com"})
+	ca2, keyPEM2, err = qinduTls.GenerateCA("Test CA", 10, []string{"test.com"})
 	if err != nil {
 		t.Fatalf("GenerateCA (second): %v", err)
 	}
@@ -206,7 +214,8 @@ func TestCAInit_DestroyAndRecreateCA(t *testing.T) {
 		t.Fatalf("GenerateCA: %v", err)
 	}
 	store := qinduTls.NewCAStore(caDir)
-	if err := store.Save(ca.CertPEM, keyPEM); err != nil {
+	err = store.Save(ca.CertPEM, keyPEM)
+	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -233,7 +242,8 @@ func TestCAInit_StoreLoadRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateCA: %v", err)
 	}
-	if err := store.Save(ca.CertPEM, keyPEM); err != nil {
+	err = store.Save(ca.CertPEM, keyPEM)
+	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -352,7 +362,9 @@ func TestApplyConfigOverride_MergeSuccess(t *testing.T) {
 
 	// Create override directory and file
 	qinduDir := filepath.Join(tmpDir, "Qindu")
-	os.MkdirAll(qinduDir, 0700)
+	if err := os.MkdirAll(qinduDir, 0700); err != nil {
+		t.Fatalf("MkdirAll override dir: %v", err)
+	}
 
 	overrideYAML := []byte(`
 tls:
@@ -420,7 +432,8 @@ func TestCAInit_CAKeyNotInOutput(t *testing.T) {
 	}
 
 	// Verify the certificate parses correctly
-	parsedCert, err := x509.ParseCertificate(certBlock.Bytes)
+	var parsedCert *x509.Certificate
+	parsedCert, err = x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
 		t.Fatalf("parsing certificate from CertPEM: %v", err)
 	}

@@ -16,8 +16,8 @@ const defaultMaxCacheSize = 1000
 // exclusive access for writes. The cache has a maximum size to prevent
 // unbounded growth from subdomain proliferation.
 type CertCache struct {
-	mu      sync.RWMutex
 	cache   map[string]*tls.Certificate
+	mu      sync.RWMutex
 	maxSize int
 }
 

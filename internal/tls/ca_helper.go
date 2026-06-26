@@ -79,7 +79,7 @@ func parseCAFromPEM(certPEM, keyPEM []byte) (*CA, error) {
 	if !ok {
 		return nil, fmt.Errorf("CA key is not ECDSA P-256 (got %T), file may be corrupted", cert.PublicKey)
 	}
-	if certPub.X.Cmp(key.PublicKey.X) != 0 || certPub.Y.Cmp(key.PublicKey.Y) != 0 {
+	if !certPub.Equal(&key.PublicKey) {
 		return nil, fmt.Errorf("CA key does not match certificate")
 	}
 

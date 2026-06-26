@@ -68,9 +68,7 @@ func TestGenerateCA_SerialNumber(t *testing.T) {
 		t.Error("two CAs should have different serial numbers")
 	}
 
-	// Verify serial number has sufficient entropy (≥128 bits means > 2^127)
-	min := new(ecdsa.PublicKey).X // just need a big int
-	_ = min
+	// Verify serial number has sufficient entropy (at least 64 bits)
 	if ca1.Cert.SerialNumber.BitLen() < 64 {
 		t.Errorf("serial number has insufficient entropy: %d bits", ca1.Cert.SerialNumber.BitLen())
 	}

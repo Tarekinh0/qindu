@@ -103,7 +103,7 @@ func TestCertCache_ConcurrentReadWrite(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			for _, d := range domains {
-				cache.GetOrCreate(d, ca)
+				_, _ = cache.GetOrCreate(d, ca)
 			}
 		}(i)
 	}
@@ -159,8 +159,12 @@ func TestCertCache_Len(t *testing.T) {
 		t.Errorf("empty cache Len() = %d, want 0", l)
 	}
 
-	cache.GetOrCreate("a.com", ca)
-	cache.GetOrCreate("b.com", ca)
+	if _, err := cache.GetOrCreate("a.com", ca); err != nil {
+		t.Fatalf("GetOrCreate(a.com): %v", err)
+	}
+	if _, err := cache.GetOrCreate("b.com", ca); err != nil {
+		t.Fatalf("GetOrCreate(b.com): %v", err)
+	}
 
 	if l := cache.Len(); l != 2 {
 		t.Errorf("cache Len() = %d, want 2", l)
@@ -175,8 +179,12 @@ func TestCertCache_Clear(t *testing.T) {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
 
-	cache.GetOrCreate("a.com", ca)
-	cache.GetOrCreate("b.com", ca)
+	if _, err := cache.GetOrCreate("a.com", ca); err != nil {
+		t.Fatalf("GetOrCreate(a.com): %v", err)
+	}
+	if _, err := cache.GetOrCreate("b.com", ca); err != nil {
+		t.Fatalf("GetOrCreate(b.com): %v", err)
+	}
 
 	cache.Clear()
 

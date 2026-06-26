@@ -58,15 +58,29 @@ func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	defer clientConn.Close()
+
+	// handleMITM manages clientConn lifecycle; all other paths close here.
+	mitm := false
+	defer func() {
+		if !mitm {
+			_ = clientConn.Close()
+		}
+	}()
 
 	// Send 200 Connection Established to the client
-	bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
-	bufrw.Flush()
+	if _, err := bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		p.logger.Debug("client disconnected before CONNECT response", "host", hostOnly, "error", err)
+		return
+	}
+	if err := bufrw.Flush(); err != nil {
+		p.logger.Debug("flush failed after CONNECT response", "host", hostOnly, "error", err)
+		return
+	}
 
 	// Route based on action
 	switch action {
 	case policy.ActionMITM:
+		mitm = true
 		p.logger.Info("MITM connection",
 			"host", hostOnly,
 			"port", port,
@@ -89,7 +103,7 @@ func (p *Proxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 			"host", hostOnly,
 			"action", string(action),
 		)
-		fmt.Fprintf(clientConn, "HTTP/1.1 500 Internal Server Error\r\n\r\n")
+		_, _ = fmt.Fprintf(clientConn, "HTTP/1.1 500 Internal Server Error\r\n\r\n")
 	}
 }
 
@@ -116,7 +130,7 @@ func (p *Proxy) handleTunnel(clientConn net.Conn, host, port string, startTime t
 		})
 		return
 	}
-	defer upstreamConn.Close()
+	defer func() { _ = upstreamConn.Close() }()
 
 	// Bidirectional blind copy.
 	// Both directions must complete before logging to ensure accurate byte counts.
@@ -129,7 +143,7 @@ func (p *Proxy) handleTunnel(clientConn net.Conn, host, port string, startTime t
 		stats.bytesIn.Add(n)
 		// Signal the other direction to stop by closing the write side
 		if tcpConn, ok := upstreamConn.(*net.TCPConn); ok {
-			tcpConn.CloseWrite()
+			_ = tcpConn.CloseWrite()
 		}
 	}()
 	buf := make([]byte, forwardingBufferSize)
@@ -137,7 +151,7 @@ func (p *Proxy) handleTunnel(clientConn net.Conn, host, port string, startTime t
 	stats.bytesOut.Add(n)
 	// Signal the goroutine to stop
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.CloseWrite()
+		_ = tcpConn.CloseWrite()
 	}
 	wg.Wait()
 

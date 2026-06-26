@@ -11,27 +11,27 @@ import (
 
 // Config represents the full Qindu configuration.
 type Config struct {
-	Agent     AgentConfig     `yaml:"agent"`
-	TLS       TLSConfig       `yaml:"tls"`
 	Providers ProvidersConfig `yaml:"providers"`
+	Agent     AgentConfig     `yaml:"agent"`
 	Logging   LoggingConfig   `yaml:"logging"`
+	TLS       TLSConfig       `yaml:"tls"`
 }
 
 // AgentConfig holds agent-level settings.
 type AgentConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
-	ListenPort int    `yaml:"listen_port"`
 	Mode       string `yaml:"mode"`
 	FailMode   string `yaml:"fail_mode"`
+	ListenPort int    `yaml:"listen_port"`
 }
 
 // TLSConfig holds TLS/CA settings.
 type TLSConfig struct {
 	CAName             string `yaml:"ca_name"`
-	CAValidityYears    int    `yaml:"ca_validity_years"`
 	CAKeyAlgorithm     string `yaml:"ca_key_algorithm"`
-	CertCacheEnabled   bool   `yaml:"cert_cache_enabled"`
 	UpstreamValidation string `yaml:"upstream_validation"`
+	CAValidityYears    int    `yaml:"ca_validity_years"`
+	CertCacheEnabled   bool   `yaml:"cert_cache_enabled"`
 }
 
 // ProvidersConfig maps provider names to their settings.
@@ -39,8 +39,8 @@ type ProvidersConfig map[string]ProviderConfig
 
 // ProviderConfig holds configuration for a single AI provider.
 type ProviderConfig struct {
-	Enabled bool     `yaml:"enabled"`
 	Domains []string `yaml:"domains"`
+	Enabled bool     `yaml:"enabled"`
 }
 
 // LoggingConfig holds logging settings.

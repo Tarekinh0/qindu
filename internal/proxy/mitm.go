@@ -25,7 +25,7 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 	startTime := time.Now()
 	stats := &forwardStats{}
 
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	// 1. Get or create leaf certificate for the host
 	leafCert, err := p.certCache.GetOrCreate(host, p.ca)
@@ -54,10 +54,10 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 	}
 
 	browserConn := tls.Server(clientConn, browserTLSConfig)
-	if err := browserConn.Handshake(); err != nil {
+	if hsErr := browserConn.Handshake(); hsErr != nil {
 		p.logger.Error("browser TLS handshake failed",
 			"host", host,
-			"error", err,
+			"error", hsErr,
 		)
 		logging.LogConnection(p.logger, logging.ConnectionLogEntry{
 			Timestamp:  logging.NowUTC(),
@@ -70,7 +70,7 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 		})
 		return
 	}
-	defer browserConn.Close()
+	defer func() { _ = browserConn.Close() }()
 
 	// 3. TLS handshake with upstream AI service (Qindu as TLS client)
 	upstreamTLSConfig := &tls.Config{
@@ -115,7 +115,7 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 		})
 		return
 	}
-	defer upstreamConn.Close()
+	defer func() { _ = upstreamConn.Close() }()
 
 	// 4. Forward HTTP requests through the interceptor pipeline
 	// Handle multiple requests on the same connection (HTTP keep-alive)
@@ -124,12 +124,12 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 	upstreamReader := bufio.NewReader(upstreamConn)
 	lastStatus := 200
 	for {
-		status, err := forwardRequestAndResponse(browserReader, browserConn, upstreamReader, upstreamConn, p.interceptor, stats)
-		if err != nil {
-			if err != io.EOF {
+		status, fwdErr := forwardRequestAndResponse(browserReader, browserConn, upstreamReader, upstreamConn, p.interceptor, stats)
+		if fwdErr != nil {
+			if fwdErr != io.EOF {
 				p.logger.Debug("forward error",
 					"host", host,
-					"error", err,
+					"error", fwdErr,
 				)
 			}
 			// Capture the status from the failed request when available
@@ -167,5 +167,7 @@ func (p *Proxy) sendBadGateway(conn io.Writer) {
 		"Connection: close\r\n" +
 		"\r\n" +
 		`{"error":"bad_gateway","detail":"upstream connection failed"}` + "\n"
-	conn.Write([]byte(msg))
+	if _, err := conn.Write([]byte(msg)); err != nil {
+		p.logger.Debug("sendBadGateway write failed", "error", err)
+	}
 }

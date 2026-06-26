@@ -3,6 +3,7 @@ package service
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -29,6 +30,8 @@ func HealthHandler(startTime time.Time, version string) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.WriteHeader(http.StatusOK)
 
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			slog.Error("health response encode failed", "error", err)
+		}
 	}
 }

@@ -281,12 +281,13 @@ func TestCreateCRL(t *testing.T) {
 	}
 
 	// Verify the CRL contains no revoked certificates
-	if len(crl.RevokedCertificates) != 0 {
-		t.Errorf("CRL should have 0 revoked certs, got %d", len(crl.RevokedCertificates))
+	if len(crl.RevokedCertificateEntries) != 0 {
+		t.Errorf("CRL should have 0 revoked certs, got %d", len(crl.RevokedCertificateEntries))
 	}
 
 	// Verify the CRL is signed by the CA
-	if err := crl.CheckSignatureFrom(ca.Cert); err != nil {
+	err = crl.CheckSignatureFrom(ca.Cert)
+	if err != nil {
 		t.Errorf("CRL signature verification failed: %v", err)
 	}
 
@@ -304,7 +305,8 @@ func TestCreateCRL(t *testing.T) {
 	// Verify SaveCRL writes to disk and the file is readable
 	tmpDir := t.TempDir()
 	crlPath := filepath.Join(tmpDir, CRLFilename)
-	if err := SaveCRL(crlDER, crlPath); err != nil {
+	err = SaveCRL(crlDER, crlPath)
+	if err != nil {
 		t.Fatalf("SaveCRL failed: %v", err)
 	}
 

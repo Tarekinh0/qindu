@@ -12,11 +12,11 @@ import (
 type ConnectionLogEntry struct {
 	Timestamp  string `json:"timestamp"`
 	Host       string `json:"host"`
+	Mode       string `json:"mode,omitempty"` // "mitm" or "tunnel"
 	Status     int    `json:"status"`
 	DurationMs int64  `json:"duration_ms"`
 	BytesIn    int64  `json:"bytes_in"`
 	BytesOut   int64  `json:"bytes_out"`
-	Mode       string `json:"mode,omitempty"` // "mitm" or "tunnel"
 }
 
 // InitLogger creates and configures an slog.Logger with JSON output.

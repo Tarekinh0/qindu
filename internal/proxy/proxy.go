@@ -18,18 +18,16 @@ type DialFunc func(network, addr string, config *tls.Config) (*tls.Conn, error)
 // Proxy is the main Qindu HTTP/S proxy that handles CONNECT tunneling
 // and local endpoints (PAC, health).
 type Proxy struct {
+	startTime    time.Time
+	interceptor  Interceptor
 	config       *policy.Config
 	ca           *qinduTls.CA
 	certCache    *qinduTls.CertCache
 	domainRouter *policy.DomainRouter
-	interceptor  Interceptor
 	logger       *slog.Logger
-	startTime    time.Time
+	rootCAs      *x509.CertPool
+	dialTLS      DialFunc
 	version      string
-
-	// Upstream TLS configuration (set at construction by tests via direct field access)
-	rootCAs *x509.CertPool
-	dialTLS DialFunc
 }
 
 // NewProxy creates a new Proxy instance.
@@ -85,7 +83,9 @@ func (p *Proxy) handlePAC(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(pacContent))
+	if _, err := w.Write([]byte(pacContent)); err != nil {
+		p.logger.Error("failed to write PAC response", "error", err)
+	}
 }
 
 // handleHealth delegates to the service package's properly-typed health handler.

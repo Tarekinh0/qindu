@@ -54,6 +54,8 @@ func forwardRequestAndResponse(
 	interceptor Interceptor,
 	stats *forwardStats,
 ) (int, error) {
+	var err error
+
 	// 1. Read request from browser (reuse reader to preserve buffered bytes)
 	req, err := http.ReadRequest(browserReader)
 	if err != nil {
@@ -61,7 +63,9 @@ func forwardRequestAndResponse(
 	}
 
 	// 2. Intercept request (NoOp passes through)
-	modifiedReq, reqBody, err := interceptor.InterceptRequest(req)
+	var modifiedReq *http.Request
+	var reqBody io.ReadCloser
+	modifiedReq, reqBody, err = interceptor.InterceptRequest(req)
 	if err != nil {
 		return 0, fmt.Errorf("intercepting request: %w", err)
 	}
@@ -72,18 +76,21 @@ func forwardRequestAndResponse(
 	// 3. Write complete request (headers + body) to upstream, counting bytes.
 	// The countingWriter captures actual bytes written including chunked encoding.
 	upWriter := &countingWriter{w: upstreamWriter, counted: &stats.bytesIn}
-	if err := modifiedReq.Write(upWriter); err != nil {
+	if err = modifiedReq.Write(upWriter); err != nil {
 		return 0, fmt.Errorf("writing request to upstream: %w", err)
 	}
 
 	// 4. Read response from upstream (reuse reader to preserve buffered bytes)
-	resp, err := http.ReadResponse(upstreamReader, modifiedReq)
+	var resp *http.Response
+	resp, err = http.ReadResponse(upstreamReader, modifiedReq)
 	if err != nil {
 		return 0, fmt.Errorf("reading response from upstream: %w", err)
 	}
 
 	// 5. Intercept response (NoOp passes through)
-	modifiedResp, respBody, err := interceptor.InterceptResponse(resp)
+	var modifiedResp *http.Response
+	var respBody io.ReadCloser
+	modifiedResp, respBody, err = interceptor.InterceptResponse(resp)
 	if err != nil {
 		return resp.StatusCode, fmt.Errorf("intercepting response: %w", err)
 	}
@@ -93,7 +100,7 @@ func forwardRequestAndResponse(
 
 	// 6. Write complete response (headers + body) to browser, counting bytes.
 	bw := &countingWriter{w: browserWriter, counted: &stats.bytesOut}
-	if err := modifiedResp.Write(bw); err != nil {
+	if err = modifiedResp.Write(bw); err != nil {
 		return modifiedResp.StatusCode, fmt.Errorf("writing response to browser: %w", err)
 	}
 

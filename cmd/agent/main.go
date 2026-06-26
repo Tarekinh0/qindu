@@ -56,7 +56,12 @@ func runCAInit(args []string) int {
 	unsafe := fs.Bool("unsafe", false, "generate CA without Name Constraints (reduces security)")
 	autoConfirmUnsafe := fs.Bool("auto-confirm-unsafe", false, "skip interactive confirmation for --unsafe (MSI GUI context only)")
 	configPath := fs.String("config", "", "path to YAML config file")
-	fs.Parse(args)
+	// flag.ExitOnError causes os.Exit(2) on parse failures, but we capture
+	// the error explicitly for defense-in-depth and lint compliance.
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: parsing ca-init flags: %v\n", err)
+		return 1
+	}
 
 	// Resolve config path through the standard priority chain
 	resolvedConfigPath, err := resolveConfigPath(*configPath)
@@ -84,7 +89,8 @@ func runCAInit(args []string) int {
 		// Unsafe mode: interactive warning and confirmation required,
 		// unless --auto-confirm-unsafe is set (MSI GUI already served as consent; PR-C2 fix)
 		if !*autoConfirmUnsafe {
-			if err := confirmUnsafeMode(); err != nil {
+			err = confirmUnsafeMode()
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "error: %v\n", err)
 				return 1
 			}
@@ -94,7 +100,8 @@ func runCAInit(args []string) int {
 	// Get CA storage directory and ensure it exists (store.Save calls MkdirAll
 	// internally, but creating it early guards against atomicity edge cases).
 	caDir := getCADir()
-	if err := os.MkdirAll(caDir, 0700); err != nil {
+	err = os.MkdirAll(caDir, 0700)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to create CA directory %s: %v\n", caDir, err)
 		return 1
 	}
@@ -109,7 +116,8 @@ func runCAInit(args []string) int {
 
 	// Generation succeeded — now destroy the old CA before saving the new one
 	// (SR-INSTALLER-12: total replacement).
-	if err := destroyExistingCA(caDir); err != nil {
+	err = destroyExistingCA(caDir)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
@@ -117,7 +125,8 @@ func runCAInit(args []string) int {
 	// Save new CA via platform-specific store (DPAPI on Windows, memory on other).
 	// Key never touches disk in plaintext — encrypted by store.
 	store := qinduTls.NewCAStore(caDir)
-	if err := store.Save(ca.CertPEM, keyPEM); err != nil {
+	err = store.Save(ca.CertPEM, keyPEM)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to save CA: %v\n", err)
 		return 1
 	}
@@ -204,7 +213,7 @@ func confirmUnsafeMode() error {
 	}
 	response = strings.TrimSpace(response)
 	if response != "YES" {
-		return errors.New("aborted by user — CA generation cancelled")
+		return errors.New("aborted by user — CA generation canceled")
 	}
 
 	fmt.Fprintln(os.Stderr)

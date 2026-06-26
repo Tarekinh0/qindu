@@ -160,7 +160,9 @@ func TestLogConnection_NoPII(t *testing.T) {
 
 	// Verify the entry itself doesn't have extra fields beyond the allowed set
 	var logEntry map[string]interface{}
-	json.Unmarshal([]byte(output), &logEntry)
+	if err := json.Unmarshal([]byte(output), &logEntry); err != nil {
+		t.Errorf("failed to parse log JSON: %v", err)
+	}
 
 	allowedFields := map[string]bool{
 		"time": true, "level": true, "msg": true,

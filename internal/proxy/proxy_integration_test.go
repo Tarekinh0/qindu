@@ -32,13 +32,12 @@ type testHarness struct {
 	certCache        *qinduTls.CertCache
 	proxy            *Proxy
 	proxyServer      *http.Server
-	upstreamServer   *http.Server
-	upstreamAddr     string
 	upstreamCert     *x509.CertPool
 	shutdownProxy    func()
 	shutdownUpstream func()
 	logBuf           *bytes.Buffer
 	t                *testing.T
+	upstreamAddr     string
 }
 
 // newTestHarness creates a test environment with the given AI domains.
@@ -118,7 +117,7 @@ func newTestHarness(t *testing.T, aiDomains []string) *testHarness {
 	wg.Add(1)
 	go func() {
 		wg.Done()
-		h.proxyServer.Serve(listener)
+		_ = h.proxyServer.Serve(listener)
 	}()
 
 	wg.Wait() // wait for goroutine to start
@@ -127,18 +126,13 @@ func newTestHarness(t *testing.T, aiDomains []string) *testHarness {
 	h.shutdownProxy = func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		h.proxyServer.Shutdown(ctx)
+		_ = h.proxyServer.Shutdown(ctx)
 	}
 
 	return h
 }
 
 func (h *testHarness) proxyURL() string {
-	port := h.proxyServer.Addr
-	if port == "" {
-		// Find actual addr from config
-		port = fmt.Sprintf(":%d", h.proxy.config.Agent.ListenPort)
-	}
 	addr := h.proxyServer.Addr
 	if addr != "" {
 		return "http://127.0.0.1" + addr[strings.LastIndex(addr, ":"):]
@@ -197,19 +191,19 @@ func startTestUpstreamServer(t *testing.T, ca *qinduTls.CA) (string, *x509.CertP
 			"headers": r.Header,
 			"body":    string(body),
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	server := &http.Server{
 		Handler: mux,
 	}
 
-	go server.Serve(listener)
+	go func() { _ = server.Serve(listener) }()
 
 	addr := listener.Addr().String()
 
@@ -220,7 +214,7 @@ func startTestUpstreamServer(t *testing.T, ca *qinduTls.CA) (string, *x509.CertP
 	shutdown := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 	}
 
 	return addr, certPool, shutdown
@@ -288,7 +282,7 @@ func TestIntegration_PAC_Endpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /proxy.pac failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -326,7 +320,7 @@ func TestIntegration_Health_Endpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -378,7 +372,7 @@ func TestIntegration_502_BadGateway(t *testing.T) {
 		t.Logf("expected behavior: connection closed (502): %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Logf("got status %d, expected 502 (or connection error)", resp.StatusCode)
@@ -417,7 +411,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 	startShutdown := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	h.proxyServer.Shutdown(ctx)
+	_ = h.proxyServer.Shutdown(ctx)
 
 	// Wait for the slow request to complete
 	select {
@@ -450,7 +444,7 @@ func TestIntegration_UpstreamTLSValidationRejectsSelfSigned(t *testing.T) {
 		t.Logf("expected TLS rejection behavior: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Should get 502 Bad Gateway
 	if resp.StatusCode != http.StatusBadGateway {
@@ -487,7 +481,9 @@ func TestIntegration_NoPIIInLogs(t *testing.T) {
 	// Serialize to JSON and verify field names
 	data, _ := json.Marshal(entry)
 	var fields map[string]interface{}
-	json.Unmarshal(data, &fields)
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatalf("failed to unmarshal entry: %v", err)
+	}
 
 	forbiddenFields := []string{
 		"body", "header", "request", "response",
@@ -510,7 +506,7 @@ func TestIntegration_HealthEndpointNoSensitiveInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
@@ -539,7 +535,7 @@ func TestIntegration_PACContainsOnlyDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /proxy.pac failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
@@ -673,7 +669,7 @@ func TestIntegration_NoOpInterceptorTransparency(t *testing.T) {
 
 	// Read the body to verify it's unchanged
 	bodyData, _ := io.ReadAll(body)
-	body.Close()
+	_ = body.Close()
 	if string(bodyData) != "test payload" {
 		t.Errorf("NoOp body = %q, want 'test payload'", string(bodyData))
 	}
@@ -692,7 +688,7 @@ func TestIntegration_NoOpInterceptorTransparency(t *testing.T) {
 	}
 
 	respData, _ := io.ReadAll(respBody)
-	respBody.Close()
+	_ = respBody.Close()
 	if string(respData) != "response payload" {
 		t.Errorf("NoOp response body = %q, want 'response payload'", string(respData))
 	}
@@ -723,12 +719,12 @@ func sendCONNECTRequest(t *testing.T, proxyAddr, host, path, method, reqBody str
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial proxy: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send CONNECT request
 	connectReq := fmt.Sprintf("CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\n\r\n", host, host)
-	if _, err := conn.Write([]byte(connectReq)); err != nil {
-		return nil, nil, fmt.Errorf("write CONNECT: %w", err)
+	if _, writeErr := conn.Write([]byte(connectReq)); writeErr != nil {
+		return nil, nil, fmt.Errorf("write CONNECT: %w", writeErr)
 	}
 
 	// Read CONNECT response
@@ -737,7 +733,7 @@ func sendCONNECTRequest(t *testing.T, proxyAddr, host, path, method, reqBody str
 	if err != nil {
 		return nil, nil, fmt.Errorf("read CONNECT response: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -749,8 +745,8 @@ func sendCONNECTRequest(t *testing.T, proxyAddr, host, path, method, reqBody str
 	httpReq := fmt.Sprintf("%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		method, path, host, len(reqBody), reqBody)
 
-	if _, err := conn.Write([]byte(httpReq)); err != nil {
-		return nil, nil, fmt.Errorf("write HTTP request: %w", err)
+	if _, writeErr := conn.Write([]byte(httpReq)); writeErr != nil {
+		return nil, nil, fmt.Errorf("write HTTP request: %w", writeErr)
 	}
 
 	// Read HTTP response
@@ -760,7 +756,7 @@ func sendCONNECTRequest(t *testing.T, proxyAddr, host, path, method, reqBody str
 	}
 
 	body, err := io.ReadAll(httpResp.Body)
-	httpResp.Body.Close()
+	_ = httpResp.Body.Close()
 	if err != nil {
 		return httpResp, body, fmt.Errorf("read response body: %w", err)
 	}
@@ -782,12 +778,12 @@ func sendCONNECTRequestTLS(t *testing.T, proxyAddr, host, path, method, reqBody 
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial proxy: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send CONNECT request
 	connectReq := fmt.Sprintf("CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\n\r\n", host, host)
-	if _, err := conn.Write([]byte(connectReq)); err != nil {
-		return nil, nil, fmt.Errorf("write CONNECT: %w", err)
+	if _, writeErr := conn.Write([]byte(connectReq)); writeErr != nil {
+		return nil, nil, fmt.Errorf("write CONNECT: %w", writeErr)
 	}
 
 	// Read CONNECT response using a 1-byte buffered reader.
@@ -796,7 +792,7 @@ func sendCONNECTRequestTLS(t *testing.T, proxyAddr, host, path, method, reqBody 
 	if err != nil {
 		return nil, nil, fmt.Errorf("read CONNECT response: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -812,16 +808,16 @@ func sendCONNECTRequestTLS(t *testing.T, proxyAddr, host, path, method, reqBody 
 		MinVersion: tls.VersionTLS12,
 	}
 	tlsConn := tls.Client(conn, tlsCfg)
-	if err := tlsConn.Handshake(); err != nil {
-		return nil, nil, fmt.Errorf("TLS handshake with proxy: %w", err)
+	if hsErr := tlsConn.Handshake(); hsErr != nil {
+		return nil, nil, fmt.Errorf("TLS handshake with proxy: %w", hsErr)
 	}
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 
 	// Send HTTP request over TLS
 	httpReq := fmt.Sprintf("%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		method, path, host, len(reqBody), reqBody)
-	if _, err := tlsConn.Write([]byte(httpReq)); err != nil {
-		return nil, nil, fmt.Errorf("write HTTP request: %w", err)
+	if _, writeErr := tlsConn.Write([]byte(httpReq)); writeErr != nil {
+		return nil, nil, fmt.Errorf("write HTTP request: %w", writeErr)
 	}
 
 	// Read HTTP response
@@ -831,7 +827,7 @@ func sendCONNECTRequestTLS(t *testing.T, proxyAddr, host, path, method, reqBody 
 	}
 
 	body, err := io.ReadAll(httpResp.Body)
-	httpResp.Body.Close()
+	_ = httpResp.Body.Close()
 	if err != nil {
 		return httpResp, body, fmt.Errorf("read response body: %w", err)
 	}
@@ -863,15 +859,15 @@ func startSlowTestUpstreamServer(t *testing.T, ca *qinduTls.CA, delay time.Durat
 	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(delay)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"slow_ok"}`))
+		_, _ = w.Write([]byte(`{"status":"slow_ok"}`))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	server := &http.Server{Handler: mux}
-	go server.Serve(listener)
+	go func() { _ = server.Serve(listener) }()
 
 	certPool := x509.NewCertPool()
 	certPool.AddCert(ca.Cert)
@@ -879,6 +875,6 @@ func startSlowTestUpstreamServer(t *testing.T, ca *qinduTls.CA, delay time.Durat
 	return listener.Addr().String(), certPool, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 	}
 }
