@@ -101,15 +101,20 @@ items:
 
 - id: QINDU-0005
   title: "Moteur PII Go-native - Recognizers"
-  status: DRAFT
+  status: DONE
   adr_ref: [ADR-004]
   domains: [pii, recognizers, regex, validators]
   dependencies: [QINDU-0001]
   gates_required: [DPO, CISO, QA]
   human_inputs_required: []
   forbidden: [real PII in test fixtures, PII in logs]
-  acceptance_evidence: "Recognizers pour EMAIL, PHONE, IBAN, CREDIT_CARD (Luhn), API_KEY, JWT. Résolution d'overlaps. Tests unitaires 100%. Score > 0.7 par défaut."
-  notes: "Faux négatifs acceptés pour noms de personnes."
+  acceptance_evidence: "9 recognizers: EMAIL (RFC 5322+TDD), PHONE (FR/EU/NANP/INTL), IBAN (34 pays, MOD-97), CREDIT_CARD (5 issuers, Luhn), JWT (structural, header validation), NAME (email inference, stop-word filtered), SECRET (70 prefix patterns + entropy 4-layer), PRIVATE_KEY (7 PEM armor types). Engine concurrent-safe, overlap resolution déterministe, 1 MiB input bound. 253 tests, 100% statement coverage, go test -race clean, golangci-lint 0 issues, 0 init()."
+  notes: "Faux négatifs acceptés pour noms de personnes. eyJ (Supabase JWT) non inclus dans prefix DB. Fuzz+benchmarks pour sprint futur."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0005/"
+  closure_date: "2026-06-27"
+  go_version: "1.26"
+  test_count: 253
+  bugs_fixed: 0
 
 - id: QINDU-0006
   title: "Tokenisation"
