@@ -5,6 +5,57 @@ owner_agent: "qindu-orchestrator"
 
 defaults:
   no_prod_apply_without_human_approval: true
+  test_count_mode: "cumulative — test_count reflects total project test suite size at sprint closure, not tests added by that sprint"
+
+risks:
+  - id: R-001
+    title: "MSI non signé — SmartScreen warning"
+    affects: [QINDU-0002]
+    severity: low
+    status: accepted
+    resolution: "Accepté pour V1 dev. Certificat OV/EV requis pour release publique."
+  - id: R-002
+    title: "Faux négatifs hex hashes"
+    affects: [QINDU-0005, QINDU-0006, QINDU-0009]
+    severity: low
+    status: accepted
+    resolution: "Longueurs connues (32, 40, 64, 128 hex) exclues comme faux positifs."
+  - id: R-003
+    title: "Évasion Unicode (confusables)"
+    affects: [QINDU-0005]
+    severity: medium
+    status: accepted
+    resolution: "PII avec confusables non-ASCII contourne les regex. Accepté pour V1."
+  - id: R-004
+    title: "Évasion par chunking"
+    affects: [QINDU-0007, QINDU-0009, QINDU-0010]
+    severity: medium
+    status: accepted
+    resolution: "PII fragmenté entre chunks non réassemblé avant QINDU-0010."
+  - id: R-005
+    title: "Core dump exposure PII"
+    affects: [QINDU-0005, QINDU-0009]
+    severity: low
+    status: accepted
+    resolution: "Valeurs PII en mémoire. Crash dumps Go peuvent les contenir. Limitation runtime."
+  - id: R-006
+    title: "Certificat signature code absent"
+    affects: [QINDU-0002, QINDU-0004]
+    severity: medium
+    status: accepted
+    resolution: "Acquisition certificat OV/EV nécessaire avant release publique."
+  - id: R-007
+    title: "Pas de fuzzing ni benchmarks"
+    affects: [QINDU-0005, QINDU-0006]
+    severity: low
+    status: accepted
+    resolution: "Différé à sprint futur dédié."
+  - id: R-008
+    title: "DPAPI sans couverture de tests unitaires"
+    affects: [QINDU-0001, QINDU-0008]
+    severity: low
+    status: accepted
+    resolution: "DPAPI nécessite Windows. Tests manuels ou VM."
 
 # ─── Phase 1: Fondation Proxy ───────────────────────────────────────
 items:
@@ -78,6 +129,7 @@ items:
   last_sprint_folder: "docs/implementation/sprints/QINDU-HOTFIX-002/"
   closure_date: "2026-06-27"
   go_version: "1.26"
+  test_count: 253
   bugs_fixed: 50
 
 - id: QINDU-0004
@@ -145,7 +197,7 @@ items:
 - id: QINDU-0008
   title: "Vault local chiffré"
   status: DRAFT
-  adr_ref: [ADR-003]
+  adr_ref: [ADR-003, ADR-004, ADR-008]
   domains: [vault, crypto, dpapi]
   dependencies: [QINDU-0006]
   gates_required: [DPO, CISO, QA]
@@ -185,7 +237,7 @@ items:
   status: DRAFT
   adr_ref: [ADR-002]
   domains: [providers, chatgpt]
-  dependencies: [QINDU-0009]
+  dependencies: [QINDU-0010]
   gates_required: [QA]
   human_inputs_required: []
   forbidden: [hardcoded credentials]
@@ -209,11 +261,11 @@ items:
   status: DRAFT
   adr_ref: [ADR-004]
   domains: [providers, vault, proxy]
-  dependencies: [QINDU-0009, QINDU-0011]
+  dependencies: [QINDU-0009, QINDU-0011, QINDU-0012]
   gates_required: [DPO, QA]
   human_inputs_required: []
   forbidden: [PII in logs during history rehydration]
-  acceptance_evidence: "Rechargement d'une conversation ChatGPT tokenisée : historique réhydraté depuis le vault. Conversation créée avant expiration TTL."
+  acceptance_evidence: "Rechargement d'une conversation tokenisée (ChatGPT, Claude) : historique réhydraté depuis le vault. Conversation créée avant expiration TTL. Gemini ajouté quand QINDU-0014 livré."
   notes: "Si vault expiré, tokens laissés visibles (pas d'invention de valeur)."
 
 # ─── Phase 5: Extension ──────────────────────────────────────────
@@ -233,7 +285,7 @@ items:
 - id: QINDU-0015
   title: "Page d'erreur locale (mode fail-closed)"
   status: DRAFT
-  adr_ref: [ADR-005]
+  adr_ref: []
   domains: [proxy, ux]
   dependencies: [QINDU-0001]
   gates_required: [QA]
@@ -243,13 +295,43 @@ items:
   notes: "Optionnel pour la V1 open-source."
 
 - id: QINDU-0016
-  title: "Config UI locale (tray icon)"
+  title: "Interface utilisateur locale (tray icon + fenêtre de config)"
   status: DRAFT
-  adr_ref: []
-  domains: [ux, config]
-  dependencies: [QINDU-0002]
+  adr_ref: [ADR-005, ADR-008]
+  domains: [ux, config, metrics]
+  dependencies: [QINDU-0002, QINDU-0007, QINDU-0017]
   gates_required: [DPO, QA]
-  human_inputs_required: ["design UX"]
-  forbidden: [telemetry, tracking, internet access]
-  acceptance_evidence: "Tray icon Windows avec activation/désactivation, mode monitor/enforce, accès aux logs, suppression vault."
-  notes: "Nice-to-have V1. Peut être repoussé en V2."
+  human_inputs_required: ["design UX (maquette fenêtre de config)"]
+  forbidden: [telemetry, tracking, internet access, PII affiché en clair]
+  acceptance_evidence: >
+    Tray icon Windows avec menu contextuel (activer/désactiver proxy, quitter).
+    Double-clic → fenêtre de configuration native (Win32/Go, type walk ou shiny).
+    Onglet "Proxy" : toggle tokenisation (monitor/enforce/off),
+    toggle redirection endpoints (QINDU-0017).
+    Onglet "Métriques" : PII détectées, tokens créés, requêtes redirigées,
+    uptime, bytes in/out — alimenté par endpoint /metrics (JSON, PII-free).
+    Onglet "Vault" : statut (actif/expiré), purge manuelle.
+    Zéro telemetry, zéro appel réseau sortant.
+  notes: "Fenêtre native Win32. Backend: nouveau endpoint /metrics exposant les compteurs internes sans PII. Priorité remontée suite à QINDU-0017."
+
+- id: QINDU-0017
+  title: "Endpoint rewriting — Redirection provider vers endpoint custom"
+  status: DRAFT
+  adr_ref: [ADR-002, ADR-005]
+  domains: [proxy, routing, interceptor]
+  dependencies: [QINDU-0001]
+  gates_required: [DPO, CISO, QA]
+  human_inputs_required: []
+  forbidden:
+    - "redirection non documentée à l'utilisateur"
+    - "PII leakage vers endpoint custom sans tokenisation"
+  acceptance_evidence: >
+    Config YAML : mapping domaine_source → endpoint_cible.
+    Le proxy intercepte les CONNECT vers chatgpt.com / claude.ai / gemini.google.com
+    et réécrit la destination vers l'endpoint custom (ex: openwebui.local:3000).
+    Format de requête traduit si endpoint non compatible OpenAI API.
+    Tokenisation PII préservée (si pipeline actif), bypassable pour endpoint local.
+  notes: >
+    Use case: plugins Office (Excel, PPT) avec API GPT intégrée →
+    redirigés vers Open WebUI ou LiteLLM self-hosted.
+    Dépend uniquement du proxy (QINDU-0001), pas du pipeline PII.
