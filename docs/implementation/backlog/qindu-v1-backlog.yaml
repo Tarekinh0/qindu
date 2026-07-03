@@ -170,7 +170,7 @@ items:
 
 - id: QINDU-0006
   title: "Tokenisation"
-  status: DRAFT
+  status: DONE
   adr_ref: [ADR-004]
   domains: [tokenize, pii]
   dependencies: [QINDU-0005]
@@ -178,7 +178,12 @@ items:
   human_inputs_required: []
   forbidden: [real PII in test fixtures]
   acceptance_evidence: "Tokenizer remplace PII par <<PII_TYPE_ID>>. Format stable, réversible. Même valeur → même token dans une conversation. Tests unitaires."
-  notes: "Intégration avec le moteur PII (QINDU-0005)."
+  notes: "Intégration avec le moteur PII (QINDU-0005). Memory locking via mmap+mlock (Linux) / VirtualAlloc+VirtualLock (Windows). Store interface injectable pour futur vault."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0006/"
+  closure_date: "2026-07-03"
+  go_version: "1.26"
+  test_count: 295
+  bugs_fixed: 0
 
 - id: QINDU-0007
   title: "Mode Monitor (détection sans modification)"
