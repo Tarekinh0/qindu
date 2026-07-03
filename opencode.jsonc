@@ -71,6 +71,11 @@
       "description": "Senior Go dev : revue de code impitoyable contre Clean Code, SOLID, Go Proverbs, Pragmatic Programmer. Note la maintenabilité et détecte les bugs.",
       "mode": "subagent",
       "temperature": 0.1
+    },
+    "qindu-qemu-tester": {
+      "description": "Valide Qindu sur VM Windows QEMU. Vérifie installation, désinstallation, service, proxy, TLS et conformité story via SSH.",
+      "mode": "subagent",
+      "temperature": 0.1
     }
   }
 }

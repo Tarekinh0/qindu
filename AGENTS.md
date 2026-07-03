@@ -34,6 +34,7 @@ Qindu uses a strict multi-agent governance model to ensure security, privacy, an
 - **qindu-qa**: Reviewer. Verifies tests, PII detection accuracy, edge cases, and quality. Cannot modify code.
 - **qindu-release**: Reviewer. Verifies CI/CD, MSI packaging, code signing, and supply chain security. Cannot modify code.
 - **qindu-peer-reviewer**: Senior Go dev. Merciless code review against Clean Code, SOLID, Go Proverbs, Pragmatic Programmer, DDD, Effective Go, Code Complete. Produces structured scorecards with blocking bugs, design flaws, and maintainability grades. Invoked after DevSecOps delivers `dev-notes.md`, before CISO/DPO review gates. Cannot modify code.
+- **qindu-qemu-tester**: Reviewer. Validates on real Windows QEMU VM — install, uninstall, service, proxy, TLS, and story compliance via SSH. Cannot modify code.
 
 ### Strict Sequential Workflow
 
@@ -47,14 +48,18 @@ The workflow is strictly sequential and file-based within the sprint folder (`do
 3. **Implementation**: `qindu-devsecops` implements the story (code, tests) and writes `dev-notes.md` (factual, technical).
 4. **Peer Review**: `qindu-peer-reviewer` reviews the implementation against Clean Code, SOLID, Go Proverbs, and other design standards. Produces `peer-review.md` with scorecard, critical findings, and verdict. If REJECT or FIX_AND_RESUBMIT with critical bugs, the sprint returns to step 3 for fixes.
 
-   **Blank-slate rule**: After each DevSecOps fix cycle, the peer reviewer MUST be invoked as a fresh, independent session. The peer reviewer receives ONLY `story.md` + source code — no `dev-notes.md`, no `dpo-requirements.md`, no `ciso-requirements.md`, no prior `peer-review.md`. This eliminates confirmation bias from previous reviewers. Loop step 3→4 indefinitely until MERGE_READY is achieved.
+   **Blank-slate rule**: After each DevSecOps fix cycle, the peer reviewer MUST be invoked as a fresh, independent session. The peer reviewer receives ONLY `story.md` + source code + existing `qemu-test-report.md` (factual VM findings from prior iterations) — no `dev-notes.md`, no `dpo-requirements.md`, no `ciso-requirements.md`, no prior `peer-review.md`. This eliminates confirmation bias from previous reviewers. Loop step 3→4 indefinitely until MERGE_READY is achieved.
 5. **Review**:
    - `qindu-ciso` verifies the implementation and writes `ciso-review.md`.
    - `qindu-dpo` verifies the implementation and writes `dpo-review.md`.
+   - *On fix iterations (step 7→3→4→5), reviewers MUST also read `qemu-test-report.md` from the prior cycle.*
 6. **Validation**:
-   - `qindu-qa` verifies tests, PII accuracy, and edge cases, then writes `qa-review.md`.
-   - `qindu-release` verifies CI/CD and supply chain, then writes `release-review.md`.
-7. **Closure**: `qindu-orchestrator` reviews all artifacts, resolves any remaining conflicts, and produces `closure.md` with the final verdict.
+    - `qindu-qa` verifies tests, PII accuracy, and edge cases, then writes `qa-review.md`.
+    - `qindu-release` verifies CI/CD and supply chain, then writes `release-review.md`.
+    - *On fix iterations (step 7→3→4→5→6), validators MUST also read `qemu-test-report.md` from the prior cycle.*
+7. **VM Integration Test**: `qindu-qemu-tester` deploys the MSI to the Windows QEMU VM, runs smoke tests, edge cases, and uninstall verification, then writes `qemu-test-report.md` with verdict PASS or BLOCKED.
+    - *If BLOCKED, the sprint returns to step 3 for fixes and re-enters the full pipeline (steps 3→4→5→6→7) with the qemu-test-report fed to all downstream reviewers and validators.*
+8. **Closure**: `qindu-orchestrator` reviews all artifacts, resolves any remaining conflicts, and produces `closure.md` with the final verdict.
 
 ### Commands
 - `/qindu-sprint`: Starts a full sprint cycle.
