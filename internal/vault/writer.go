@@ -10,7 +10,7 @@ import (
 )
 
 // writeLoop drains the async channel, encrypts values, and commits to bbolt.
-// Runs until ctx is cancelled. The writeCh is never closed externally;
+// Runs until ctx is canceled. The writeCh is never closed externally;
 // ctx cancellation is the sole termination signal.
 func (v *Vault) writeLoop() {
 	defer v.wg.Done()
@@ -21,7 +21,7 @@ func (v *Vault) writeLoop() {
 			v.handleWrite(op)
 
 		case <-v.ctx.Done():
-			// Context cancelled — drain remaining before exit.
+			// Context canceled — drain remaining before exit.
 			v.drainRemaining()
 			return
 		}

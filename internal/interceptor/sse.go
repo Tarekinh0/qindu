@@ -24,12 +24,12 @@ const defaultFrameTimeout = 30 * time.Second
 // Uses a struct to avoid the 9-positional-parameter constructor anti-pattern (PR-102).
 type SSEFrameReaderConfig struct {
 	Upstream     io.ReadCloser
+	Engine       *pii.Engine
+	Logger       *slog.Logger
 	Host         string
 	Method       string
 	Path         string
 	ContentType  string
-	Engine       *pii.Engine
-	Logger       *slog.Logger
 	MaxFrameSize int
 	StatusCode   int
 	PIILogging   bool
@@ -53,17 +53,17 @@ type SSEFrameReaderConfig struct {
 //   - On stream end (io.EOF or data: [DONE]), a single monitor_scan entry is emitted
 //   - This replaces the old per-frame pii_detected entries
 type SSEFrameReader struct {
+	frameStartTime     time.Time
 	upstream           io.ReadCloser
+	aggregatedSummary  map[string]int
+	engine             *pii.Engine
+	logger             *slog.Logger
+	br                 *bufio.Reader
 	host               string
 	method             string
 	path               string
 	contentType        string
 	frameBuf           bytes.Buffer
-	frameStartTime     time.Time
-	engine             *pii.Engine
-	logger             *slog.Logger
-	br                 *bufio.Reader
-	aggregatedSummary  map[string]int
 	maxFrameSize       int
 	frameTimeout       time.Duration
 	statusCode         int

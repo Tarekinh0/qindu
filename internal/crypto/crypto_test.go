@@ -22,7 +22,7 @@ func TestNonceUniqueness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
-	defer svc.Close()
+	defer func() { _ = svc.Close() }()
 
 	nonces := make(map[[nonceSize]byte]bool)
 	const count = 10000
@@ -58,7 +58,7 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
-	defer svc.Close()
+	defer func() { _ = svc.Close() }()
 
 	cases := []struct {
 		name string
@@ -104,7 +104,7 @@ func TestDecryptTampered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
-	defer svc.Close()
+	defer func() { _ = svc.Close() }()
 
 	plaintext := []byte("sensitive data")
 	ct, err := svc.Encrypt(plaintext)
@@ -143,7 +143,7 @@ func TestKeyFileCreatedWith0600(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
-	defer svc.Close()
+	defer func() { _ = svc.Close() }()
 
 	ok, err := checkFileMode(path, 0600)
 	if err != nil {
@@ -192,7 +192,7 @@ func TestKeyGenerationEntropy(t *testing.T) {
 			t.Errorf("T-812 FAIL: duplicate key at iteration %d (astronomically unlikely)", i)
 		}
 		keys[k] = true
-		svc.Close()
+		_ = svc.Close()
 	}
 
 	if len(keys) != 100 {
@@ -218,8 +218,8 @@ func TestKeyRejectsWrongSize(t *testing.T) {
 	}
 
 	// Write a 64-byte key (too long).
-	if err := os.WriteFile(path, bytes.Repeat([]byte{0x42}, 64), 0600); err != nil {
-		t.Fatalf("setup: %v", err)
+	if writeErr := os.WriteFile(path, bytes.Repeat([]byte{0x42}, 64), 0600); writeErr != nil {
+		t.Fatalf("setup: %v", writeErr)
 	}
 
 	_, err = New(path)
@@ -237,13 +237,13 @@ func TestDecryptWrongKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New svc1: %v", err)
 	}
-	defer svc1.Close()
+	defer func() { _ = svc1.Close() }()
 
 	svc2, err := New(tempKeyPath(t))
 	if err != nil {
 		t.Fatalf("New svc2: %v", err)
 	}
-	defer svc2.Close()
+	defer func() { _ = svc2.Close() }()
 
 	ct, err := svc1.Encrypt([]byte("secret"))
 	if err != nil {
@@ -265,7 +265,7 @@ func TestDecryptTooShort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer svc.Close()
+	defer func() { _ = svc.Close() }()
 
 	_, err = svc.Decrypt([]byte{})
 	if err == nil {
@@ -304,7 +304,7 @@ func TestKeyZeroedOnClose(t *testing.T) {
 		t.Fatal("key should be non-zero random bytes before Close")
 	}
 
-	svc.Close()
+	_ = svc.Close()
 
 	// Verify key is nil'd.
 	if svc.key != nil {
@@ -321,7 +321,7 @@ func TestEncryptDistinctCiphertexts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer svc.Close()
+	defer func() { _ = svc.Close() }()
 
 	plaintext := []byte("same data")
 	seen := make(map[string]bool)

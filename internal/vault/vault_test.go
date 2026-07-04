@@ -39,24 +39,24 @@ func setupTestVault(t *testing.T, ttl time.Duration) (*Vault, func()) {
 	dbPath := filepath.Join(dir, "vault.db")
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		cryptoService.Close()
+		_ = cryptoService.Close()
 		t.Fatalf("bolt.Open: %v", err)
 	}
 
 	// Ensure the tokens bucket exists.
-	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
-		return err
-	}); err != nil {
-		db.Close()
-		cryptoService.Close()
-		t.Fatalf("create bucket: %v", err)
+	if upErr := db.Update(func(tx *bolt.Tx) error {
+		_, bktErr := tx.CreateBucketIfNotExists([]byte(BucketTokens))
+		return bktErr
+	}); upErr != nil {
+		_ = db.Close()
+		_ = cryptoService.Close()
+		t.Fatalf("create bucket: %v", upErr)
 	}
 
 	vault, err := New(db, cryptoService, ttl, testLogger())
 	if err != nil {
-		db.Close()
-		cryptoService.Close()
+		_ = db.Close()
+		_ = cryptoService.Close()
 		t.Fatalf("New: %v", err)
 	}
 
@@ -176,23 +176,23 @@ func TestShutdownDrain(t *testing.T) {
 
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		cryptoService.Close()
+		_ = cryptoService.Close()
 		t.Fatalf("bolt.Open: %v", err)
 	}
 
-	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
-		return err
-	}); err != nil {
-		db.Close()
-		cryptoService.Close()
-		t.Fatalf("create bucket: %v", err)
+	if upErr := db.Update(func(tx *bolt.Tx) error {
+		_, bktErr := tx.CreateBucketIfNotExists([]byte(BucketTokens))
+		return bktErr
+	}); upErr != nil {
+		_ = db.Close()
+		_ = cryptoService.Close()
+		t.Fatalf("create bucket: %v", upErr)
 	}
 
 	vault, err := New(db, cryptoService, 1*time.Hour, testLogger())
 	if err != nil {
-		db.Close()
-		cryptoService.Close()
+		_ = db.Close()
+		_ = cryptoService.Close()
 		t.Fatalf("New: %v", err)
 	}
 
@@ -221,10 +221,10 @@ func TestShutdownDrain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bolt.Open for verification: %v", err)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	var count int
-	db2.View(func(tx *bolt.Tx) error {
+	_ = db2.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(BucketTokens))
 		if b == nil {
 			return nil
@@ -357,17 +357,17 @@ func TestStartupSweep(t *testing.T) {
 	dbPath := filepath.Join(dir, "vault.db")
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		cryptoService.Close()
+		_ = cryptoService.Close()
 		t.Fatalf("bolt.Open: %v", err)
 	}
 
 	// Create bucket and insert expired metadata manually.
 	scope := Scope{Provider: "chatgpt", ConversationID: "test-startup-sweep"}
 
-	if err := db.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
-		if err != nil {
-			return err
+	if upErr := db.Update(func(tx *bolt.Tx) error {
+		b, bktErr := tx.CreateBucketIfNotExists([]byte(BucketTokens))
+		if bktErr != nil {
+			return bktErr
 		}
 
 		// Create metadata with an old timestamp (24h ago).
@@ -375,29 +375,29 @@ func TestStartupSweep(t *testing.T) {
 		oldMeta.CreatedAt = time.Now().Add(-25 * time.Hour).Unix()
 		metaData, _ := json.Marshal(oldMeta)
 		metaKey := conversationKey(scope, metaKeySuffix)
-		if err := b.Put([]byte(metaKey), metaData); err != nil {
-			return err
+		if putErr := b.Put([]byte(metaKey), metaData); putErr != nil {
+			return putErr
 		}
 
 		// Also add a token entry (encrypted).
 		plainValue := []byte("sweep-test@example.com")
-		encValue, err := cryptoService.Encrypt(plainValue)
-		if err != nil {
-			return err
+		encValue, encErr := cryptoService.Encrypt(plainValue)
+		if encErr != nil {
+			return encErr
 		}
 		tokenKey := conversationKey(scope, "<<EMAIL_1>>")
 		return b.Put([]byte(tokenKey), encValue)
-	}); err != nil {
-		db.Close()
-		cryptoService.Close()
-		t.Fatalf("setup bbolt: %v", err)
+	}); upErr != nil {
+		_ = db.Close()
+		_ = cryptoService.Close()
+		t.Fatalf("setup bbolt: %v", upErr)
 	}
 
 	// Now create the vault with a 24h TTL — startup sweep should purge the expired entry.
 	vault, err := New(db, cryptoService, 24*time.Hour, testLogger())
 	if err != nil {
-		db.Close()
-		cryptoService.Close()
+		_ = db.Close()
+		_ = cryptoService.Close()
 		t.Fatalf("New: %v", err)
 	}
 	defer vault.Close()
@@ -472,7 +472,7 @@ func TestDeleteConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConversation(scope1): %v", err)
 	}
-	if entries == nil || len(entries) == 0 {
+	if len(entries) == 0 {
 		t.Error("DeleteConversation: kept conversation disappeared (GetConversation returned nil/empty)")
 	}
 }
@@ -506,7 +506,7 @@ func TestNewConversationID_UUIDv4Format(t *testing.T) {
 		// Check variant nibble (19th character = index 19).
 		// Variant bits must be 10xx, so character must be 8,9,a,b or A,B.
 		v := id[19]
-		if !(v == '8' || v == '9' || v == 'a' || v == 'b' || v == 'A' || v == 'B') {
+		if v != '8' && v != '9' && v != 'a' && v != 'b' && v != 'A' && v != 'B' {
 			t.Errorf("T-813 FAIL: UUID variant invalid: got %c in %q", v, id)
 		}
 
@@ -546,7 +546,7 @@ func TestBoltDBFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bolt.Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Check file permissions on Unix.
 	info, err := os.Stat(dbPath)
@@ -642,22 +642,22 @@ func TestRestartRoundTrip(t *testing.T) {
 
 	db1, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		cryptoService1.Close()
+		_ = cryptoService1.Close()
 		t.Fatalf("bolt.Open: %v", err)
 	}
-	if err := db1.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
-		return err
-	}); err != nil {
-		db1.Close()
-		cryptoService1.Close()
-		t.Fatalf("create bucket: %v", err)
+	if upErr := db1.Update(func(tx *bolt.Tx) error {
+		_, bktErr := tx.CreateBucketIfNotExists([]byte(BucketTokens))
+		return bktErr
+	}); upErr != nil {
+		_ = db1.Close()
+		_ = cryptoService1.Close()
+		t.Fatalf("create bucket: %v", upErr)
 	}
 
 	vault1, err := New(db1, cryptoService1, 1*time.Hour, testLogger())
 	if err != nil {
-		db1.Close()
-		cryptoService1.Close()
+		_ = db1.Close()
+		_ = cryptoService1.Close()
 		t.Fatalf("New: %v", err)
 	}
 	ctx1, cancel1 := context.WithCancel(context.Background())
@@ -685,13 +685,13 @@ func TestRestartRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("crypto.New (session 2): %v", err)
 	}
-	defer cryptoService2.Close()
+	defer func() { _ = cryptoService2.Close() }()
 
 	db2, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
 		t.Fatalf("bolt.Open (session 2): %v", err)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	vault2, err := New(db2, cryptoService2, 1*time.Hour, testLogger())
 	if err != nil {

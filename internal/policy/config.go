@@ -30,11 +30,11 @@ type VaultConfig struct {
 
 // AgentConfig holds agent-level settings.
 type AgentConfig struct {
-	Monitor    MonitorConfig `yaml:"monitor"`
 	ListenAddr string        `yaml:"listen_addr"`
 	Mode       string        `yaml:"mode"`
 	FailMode   string        `yaml:"fail_mode"`
 	Vault      VaultConfig   `yaml:"vault"`
+	Monitor    MonitorConfig `yaml:"monitor"`
 	ListenPort int           `yaml:"listen_port"`
 }
 

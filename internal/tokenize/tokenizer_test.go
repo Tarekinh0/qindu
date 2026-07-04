@@ -1035,9 +1035,9 @@ func TestSubstituteEntities_VariableLengths(t *testing.T) {
 // mockPersister implements vault.TokenPersister for testing.
 // Captures calls so tests can verify correct invocation.
 type mockPersister struct {
-	mu       sync.Mutex
 	persists []persistCall
 	metas    []metaCall
+	mu       sync.Mutex
 }
 
 type persistCall struct {

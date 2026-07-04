@@ -37,8 +37,8 @@ const KeySize = 32
 // Safe for concurrent use: GCM seal/open operations are inherently
 // thread-safe when using independent nonces.
 type Service struct {
-	key    []byte // 32-byte AES key — zeroed on Close()
 	aesGCM cipher.AEAD
+	key    []byte // 32-byte AES key — zeroed on Close()
 }
 
 // New loads or creates a 32-byte key from the given file path.
@@ -135,8 +135,8 @@ func loadOrCreateKey(path string) ([]byte, error) {
 		}
 
 		// Validate file permissions.
-		if err := validateKeyFilePermissions(path); err != nil {
-			return nil, err
+		if permErr := validateKeyFilePermissions(path); permErr != nil {
+			return nil, permErr
 		}
 
 		return data, nil
@@ -173,7 +173,7 @@ func writeKeyFile(path string, key []byte) error {
 	if err != nil {
 		return fmt.Errorf("crypto: failed to create key file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if _, err := f.Write(key); err != nil {
 		return fmt.Errorf("crypto: failed to write key file: %w", err)

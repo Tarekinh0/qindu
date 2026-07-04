@@ -24,16 +24,16 @@ const startupSweepTimeout = 30 * time.Second
 type writeOp struct {
 	scope   Scope
 	token   string
-	value   []byte
-	meta    bool   // true if this is a metadata update
 	piiType string // PII entity type extracted from token (e.g., "EMAIL"); empty for meta ops
+	value   []byte // encrypted PII value (nil for meta ops, encrypted by writeLoop)
+	meta    bool   // true if this is a metadata update
 }
 
 // TokenEntry represents a decrypted token→value pair for a conversation.
 type TokenEntry struct {
 	Token string // the surrogate token (e.g., "<<EMAIL_1>>")
-	Value []byte // the decrypted original PII value
 	Type  string // the PII entity type (e.g., "EMAIL")
+	Value []byte // the decrypted original PII value
 }
 
 // Vault is the encrypted persistent store for token↔PII mappings.
@@ -46,15 +46,15 @@ type TokenEntry struct {
 //
 // Safe for concurrent use.
 type Vault struct {
+	ctx        context.Context
 	db         *bolt.DB
 	crypto     *crypto.Service
-	ttl        time.Duration
 	logger     *slog.Logger
 	writeCh    chan writeOp
-	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	wgInFlight sync.WaitGroup // tracks in-flight enqueue senders (PR-003 TOCTOU fix)
+	ttl        time.Duration
 	closeMu    sync.Mutex
 	closed     bool
 }
@@ -110,7 +110,7 @@ func New(db *bolt.DB, crypto *crypto.Service, ttl time.Duration, logger *slog.Lo
 // drain pending writes, flush bbolt, and zero the crypto key. Failure to
 // call Close() leaks goroutines and may leave data uncommitted.
 //
-// ctx controls the lifetime of both goroutines. When ctx is cancelled,
+// ctx controls the lifetime of both goroutines. When ctx is canceled,
 // goroutines exit gracefully — but Close() is still required to drain
 // pending writes, flush bbolt, and zero the crypto key.
 //
@@ -179,7 +179,7 @@ func (v *Vault) Close() {
 
 	// Close crypto service (zeros key).
 	if v.crypto != nil {
-		v.crypto.Close()
+		_ = v.crypto.Close()
 		v.crypto = nil
 	}
 }

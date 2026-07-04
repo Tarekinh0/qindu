@@ -38,9 +38,9 @@ func (c *combinedReadCloser) Close() error {
 // The detection engine is shared across all connections and must be concurrent-safe
 // (pii.Engine already handles this via sync.RWMutex).
 type MonitorInterceptor struct {
-	scanPaths   []string
 	engine      *pii.Engine
 	logger      *slog.Logger
+	scanPaths   []string
 	maxInputLen int
 	piiLogging  bool
 }

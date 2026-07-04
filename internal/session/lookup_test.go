@@ -52,11 +52,11 @@ func TestLookupVaultPath_UsesXdgDataHome(t *testing.T) {
 
 	// Save and restore XDG_DATA_HOME.
 	origXdg := os.Getenv("XDG_DATA_HOME")
-	defer os.Setenv("XDG_DATA_HOME", origXdg)
+	defer func() { _ = os.Setenv("XDG_DATA_HOME", origXdg) }()
 
 	// Set XDG_DATA_HOME to a custom value.
 	customXdg := filepath.Join(os.TempDir(), "test-xdg-qindu")
-	os.Setenv("XDG_DATA_HOME", customXdg)
+	_ = os.Setenv("XDG_DATA_HOME", customXdg)
 
 	u, err := LookupVaultPath()
 	if err != nil {
@@ -77,10 +77,10 @@ func TestLookupVaultPath_UsesHomeFallback(t *testing.T) {
 
 	// Save and restore XDG_DATA_HOME.
 	origXdg := os.Getenv("XDG_DATA_HOME")
-	defer os.Setenv("XDG_DATA_HOME", origXdg)
+	defer func() { _ = os.Setenv("XDG_DATA_HOME", origXdg) }()
 
 	// Unset XDG_DATA_HOME so the fallback to ~/.local/share is used.
-	os.Unsetenv("XDG_DATA_HOME")
+	_ = os.Unsetenv("XDG_DATA_HOME")
 
 	u, err := LookupVaultPath()
 	if err != nil {

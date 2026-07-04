@@ -23,19 +23,14 @@ const (
 // No PII values are stored in metadata — only aggregate information
 // (counts, types, timestamps, provider name).
 type Metadata struct {
-	CreatedAt      int64    `json:"created_at"`      // Unix timestamp (seconds)
-	UpdatedAt      int64    `json:"updated_at"`      // Unix timestamp (seconds)
 	Provider       string   `json:"provider"`        // Lowercase provider name
 	ConversationID string   `json:"conversation_id"` // Provider's real conv ID (populated in QINDU-0011)
 	Label          string   `json:"label"`           // User-assigned label (QINDU-0011)
-	PIICount       int      `json:"pii_count"`       // Total number of PII tokens
+	Status         Status   `json:"status"`          // active | expired | purged
 	PIITypes       []string `json:"pii_types"`       // Deduplicated entity types
-	// Status: Only StatusActive ("active") is used. Expired and purged
-	// entries are physically deleted from bbolt rather than having their
-	// status transitioned. The Status field is reserved for future
-	// UI-driven soft-delete workflows (QINDU-0016) where a user may
-	// want to see recently-purged conversations in a recycle bin.
-	Status Status `json:"status"` // active | expired | purged
+	CreatedAt      int64    `json:"created_at"`      // Unix timestamp (seconds)
+	UpdatedAt      int64    `json:"updated_at"`      // Unix timestamp (seconds)
+	PIICount       int      `json:"pii_count"`       // Total number of PII tokens
 }
 
 // NewMetadata creates Metadata for a new conversation scope.

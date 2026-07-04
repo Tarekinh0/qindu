@@ -62,24 +62,17 @@ func formatToken(entityType pii.EntityType, counter uint64) string {
 // Tokens and counters are independent between instances.
 // Safe for concurrent use.
 type Tokenizer struct {
-	engine   *pii.Engine
-	store    Store
-	counters map[pii.EntityType]uint64
+	store     Store
+	persister vault.TokenPersister // optional vault-backed persistence; nil = memory-only
+	engine    *pii.Engine
+	counters  map[pii.EntityType]uint64
 	// valueToToken maps PII values to their assigned tokens for deduplication.
 	// WARNING: map keys contain raw PII. Never log, serialize, or print this field.
 	valueToToken map[string]string
 	logger       *slog.Logger
+	provider     string     // AI provider name (e.g., "chatgpt"), used as vault scope
+	convID       string     // proxy-generated UUID for the conversation, used as vault scope
 	mu           sync.Mutex // protects counters and valueToToken
-
-	// persister is an optional subscriber for persistent storage of token↔PII mappings.
-	// When nil (default), the tokenizer operates in memory-only mode with unchanged behavior.
-	persister vault.TokenPersister
-
-	// provider is the AI provider name (e.g., "chatgpt"), used as the vault scope.
-	provider string
-
-	// convID is the proxy-generated UUID for the conversation, used as the vault scope.
-	convID string
 }
 
 // Option configures a Tokenizer.

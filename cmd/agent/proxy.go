@@ -158,7 +158,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) *vault.Vault {
 			"error", boltErr,
 			"pii_values_logged", false,
 		)
-		cryptoService.Close()
+		_ = cryptoService.Close()
 		return nil
 	}
 
@@ -170,8 +170,8 @@ func initVault(cfg *policy.Config, logger *slog.Logger) *vault.Vault {
 			"error", bucketErr,
 			"pii_values_logged", false,
 		)
-		db.Close()
-		cryptoService.Close()
+		_ = db.Close()
+		_ = cryptoService.Close()
 		return nil
 	}
 
@@ -182,8 +182,8 @@ func initVault(cfg *policy.Config, logger *slog.Logger) *vault.Vault {
 			"error", vaultErr,
 			"pii_values_logged", false,
 		)
-		db.Close()
-		cryptoService.Close()
+		_ = db.Close()
+		_ = cryptoService.Close()
 		return nil
 	}
 
