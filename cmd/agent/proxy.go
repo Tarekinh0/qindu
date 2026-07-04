@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -64,87 +65,12 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 	// ── Vault initialization (QINDU-0008) ──
 	// The vault provides encrypted persistent storage for token↔PII mappings.
 	// It is optional — if initialization fails, the proxy starts in memory-only
-	// mode (vault = nil persister). The proxy operates identically with or
+	// mode (vault = nil). The proxy operates identically with or
 	// without a vault (DD-2, DD-11).
-	var vaultInst *vault.Vault
-	var vaultPersister vault.TokenPersister
-	ttl := parseConfigTTL(cfg.Agent.Vault.TTL)
-
-	if vaultUser, lookupErr := session.LookupVaultPath(); lookupErr != nil {
-		logger.Error("vault: cannot determine storage path — vault disabled",
-			"error", lookupErr,
-			"pii_values_logged", false,
-		)
-	} else {
-		// Ensure vault directory exists.
-		if mkdirErr := os.MkdirAll(vaultUser.VaultPath, 0700); mkdirErr != nil {
-			logger.Error("vault: cannot create vault directory — vault disabled",
-				"error", mkdirErr,
-				"pii_values_logged", false,
-			)
-		} else {
-			// Initialize crypto service for AES-256-GCM encryption.
-			cryptoService, cryptoErr := crypto.New(vaultUser.KeyPath)
-			if cryptoErr != nil {
-				logger.Error("vault: failed to initialize crypto — vault disabled",
-					"error", cryptoErr,
-					"pii_values_logged", false,
-				)
-			} else {
-				// Open bbolt database.
-				db, boltErr := bolt.Open(vaultUser.DBPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
-				if boltErr != nil {
-					logger.Error("vault: failed to open database — vault disabled",
-						"error", boltErr,
-						"pii_values_logged", false,
-					)
-					cryptoService.Close()
-				} else {
-					// Ensure tokens bucket exists.
-					if bucketErr := db.Update(func(tx *bolt.Tx) error {
-						_, err := tx.CreateBucketIfNotExists([]byte("tokens"))
-						return err
-					}); bucketErr != nil {
-						logger.Error("vault: failed to create bucket — vault disabled",
-							"error", bucketErr,
-							"pii_values_logged", false,
-						)
-						db.Close()
-						cryptoService.Close()
-					} else {
-						// Create the vault.
-						vaultInst, vaultErr := vault.New(db, cryptoService, ttl, logger)
-						if vaultErr != nil {
-							logger.Error("vault: failed to initialize — vault disabled",
-								"error", vaultErr,
-								"pii_values_logged", false,
-							)
-							db.Close()
-							cryptoService.Close()
-						} else {
-							// Start background goroutines (async writer, TTL sweeper).
-							vaultInst.Run(context.Background())
-							vaultPersister = vaultInst
-
-							if ttl == 0 {
-								logger.Warn("vault TTL set to infinite — PII will persist until manually deleted",
-									"pii_values_logged", false,
-								)
-							}
-							logger.Info("vault initialized",
-								"db_path", vaultUser.DBPath,
-								"ttl", ttl.String(),
-								"pii_values_logged", false,
-							)
-						}
-					}
-				}
-			}
-		}
-	}
+	vaultInst, _ := initVault(cfg, logger)
 
 	// Create the proxy with optional vault persister.
-	proxyHandler, err := proxy.NewProxy(cfg, ca, certCache, logger, appVersion, vaultPersister)
+	proxyHandler, err := proxy.NewProxy(cfg, ca, certCache, logger, appVersion)
 	if err != nil {
 		logger.Error("failed to create proxy", "error", err)
 		if vaultInst != nil {
@@ -178,24 +104,124 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 	return 0
 }
 
-// parseConfigTTL parses the vault TTL string into a time.Duration.
-// Valid: "0" (infinite), "24h", "168h" (default), "720h".
-// Invalid or empty values fall back to 168h with a warning logged.
-func parseConfigTTL(ttlStr string) time.Duration {
-	if ttlStr == "" {
-		return 168 * time.Hour
+// initVault initializes the encrypted vault (QINDU-0008).
+// Returns the vault instance and a persister interface, or nil/nil
+// if any initialization step fails. All cleanup (close crypto, close bolt)
+// is handled internally on error paths via defer.
+// The caller must call vaultInst.Close() during shutdown if non-nil.
+func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.TokenPersister) {
+	ttl, ttlErr := cfg.Agent.Vault.ParseTTL()
+	if ttlErr != nil {
+		logger.Error("vault: invalid TTL in config — vault disabled",
+			"error", ttlErr,
+			"pii_values_logged", false,
+		)
+		return nil, nil
 	}
-	if ttlStr == "0" {
-		return 0 // infinite
+
+	vaultUser, lookupErr := session.LookupVaultPath()
+	if lookupErr != nil {
+		logger.Error("vault: cannot determine storage path — vault disabled",
+			"error", lookupErr,
+			"pii_values_logged", false,
+		)
+		return nil, nil
 	}
-	d, err := time.ParseDuration(ttlStr)
-	if err != nil {
-		return 168 * time.Hour // fallback to default
+
+	if err := os.MkdirAll(vaultUser.VaultPath, 0700); err != nil {
+		logger.Error("vault: cannot create vault directory — vault disabled",
+			"error", err,
+			"pii_values_logged", false,
+		)
+		return nil, nil
 	}
-	if d <= 0 {
-		return 168 * time.Hour
+
+	// Initialize crypto service for AES-256-GCM encryption.
+	cryptoService, cryptoErr := crypto.New(vaultUser.KeyPath)
+	if cryptoErr != nil {
+		logger.Error("vault: failed to initialize crypto — vault disabled",
+			"error", cryptoErr,
+			"pii_values_logged", false,
+		)
+		return nil, nil
 	}
-	return d
+
+	// Open bbolt database.
+	db, boltErr := bolt.Open(vaultUser.DBPath, 0600, &bolt.Options{
+		Timeout: 1 * time.Second,
+		NoSync:  false, // fsync after each commit; required for crash safety (DD-2)
+	})
+	if boltErr != nil {
+		logger.Error("vault: failed to open database — vault disabled",
+			"error", boltErr,
+			"pii_values_logged", false,
+		)
+		cryptoService.Close()
+		return nil, nil
+	}
+
+	if bucketErr := db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(vault.BucketTokens))
+		return err
+	}); bucketErr != nil {
+		logger.Error("vault: failed to create bucket — vault disabled",
+			"error", bucketErr,
+			"pii_values_logged", false,
+		)
+		db.Close()
+		cryptoService.Close()
+		return nil, nil
+	}
+
+	// Create the vault.
+	vaultInst, vaultErr := vault.New(db, cryptoService, ttl, logger)
+	if vaultErr != nil {
+		logger.Error("vault: failed to initialize — vault disabled",
+			"error", vaultErr,
+			"pii_values_logged", false,
+		)
+		db.Close()
+		cryptoService.Close()
+		return nil, nil
+	}
+
+	// Start background goroutines (async writer, TTL sweeper).
+	// Background: actual cancellation via vault.Close() → v.cancel().
+	vaultInst.Run(context.Background())
+
+	if ttl == 0 {
+		logger.Warn("vault TTL set to infinite — PII will persist until manually deleted",
+			"pii_values_logged", false,
+		)
+	}
+	logger.Info("vault initialized",
+		"db_path", redactHomePath(vaultUser.DBPath),
+		"ttl", ttl.String(),
+		"pii_values_logged", false,
+	)
+
+	return vaultInst, vaultInst
+}
+
+// redactHomePath replaces the user's home directory prefix with "~" (Unix)
+// or "%LOCALAPPDATA%" (Windows) to avoid logging usernames in filesystem paths.
+// If the path does not start with a known home directory prefix, it is returned
+// unchanged. The function never modifies the underlying string — it returns a
+// new string if redaction is possible.
+func redactHomePath(path string) string {
+	// Windows: try %LOCALAPPDATA% first.
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		if after, ok := strings.CutPrefix(path, localAppData); ok {
+			return "%LOCALAPPDATA%" + after
+		}
+	}
+	// Unix (and Windows fallback): replace $HOME with "~".
+	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
+		if after, ok := strings.CutPrefix(path, homeDir); ok {
+			return "~" + after
+		}
+	}
+	return path
 }
 
 // initCA creates or loads the CA based on platform.
