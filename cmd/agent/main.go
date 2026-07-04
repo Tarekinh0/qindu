@@ -37,10 +37,14 @@ func main() {
 		os.Exit(runCAInit(os.Args[2:]))
 	}
 
+	console := flag.Bool("console", false, "force console mode (bypass Windows service detection, useful for SSH/debugging)")
 	configPath := flag.String("config", "", "path to YAML config file")
 	flag.Parse()
 
-	os.Exit(runProxy(*configPath))
+	// Check QINDU_CONSOLE env var as a flagless alternative for SSH sessions
+	forceConsole := *console || os.Getenv("QINDU_CONSOLE") == "1"
+
+	os.Exit(runProxy(*configPath, forceConsole))
 }
 
 // =============================================================================

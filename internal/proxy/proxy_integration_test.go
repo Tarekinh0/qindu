@@ -87,7 +87,10 @@ func newTestHarness(t *testing.T, aiDomains []string) *testHarness {
 	// 5. Create proxy with visible logger for debugging
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	h.proxy = NewProxy(cfg, ca, h.certCache, logger, "0.1.0-test")
+	h.proxy, err = NewProxy(cfg, ca, h.certCache, logger, "0.1.0-test")
+	if err != nil {
+		t.Fatalf("failed to create proxy: %v", err)
+	}
 	h.logBuf = &logBuf
 	h.proxy.rootCAs = h.upstreamCert
 	// Override TLS dial to redirect to test upstream server.

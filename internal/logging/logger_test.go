@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +13,8 @@ import (
 
 // TestInitLogger_JSON verifies JSON handler is created for "json" format.
 func TestInitLogger_JSON(t *testing.T) {
-	logger := InitLogger("info", "json")
+	logger, closer := InitLogger("info", "json", "stderr", "")
+	defer closer.Close()
 	if logger == nil {
 		t.Fatal("InitLogger returned nil")
 	}
@@ -31,7 +34,8 @@ func TestInitLogger_JSON(t *testing.T) {
 
 // TestInitLogger_Text verifies text handler for "text" format.
 func TestInitLogger_Text(t *testing.T) {
-	logger := InitLogger("info", "text")
+	logger, closer := InitLogger("info", "text", "stderr", "")
+	defer closer.Close()
 	if logger == nil {
 		t.Fatal("InitLogger returned nil")
 	}
@@ -51,12 +55,77 @@ func TestInitLogger_Levels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.level, func(t *testing.T) {
-			logger := InitLogger(tt.level, "json")
+			logger, closer := InitLogger(tt.level, "json", "stderr", "")
+			defer closer.Close()
 			if logger == nil {
 				t.Errorf("InitLogger with level %q returned nil", tt.level)
 			}
 		})
 	}
+}
+
+// TestInitLogger_FileOutput verifies file-based log output works.
+func TestInitLogger_FileOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger, closer := InitLogger("info", "json", "file", tmpDir)
+	defer closer.Close()
+	if logger == nil {
+		t.Fatal("InitLogger with file output returned nil")
+	}
+
+	// Write a log entry
+	logger.Info("test file output", "key", "value")
+
+	// Verify the log file was created and contains valid JSON
+	logPath := filepath.Join(tmpDir, "agent.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read log file: %v", err)
+	}
+	if !json.Valid(data) {
+		t.Errorf("log file output is not valid JSON: %s", string(data))
+	}
+	if !strings.Contains(string(data), "test file output") {
+		t.Errorf("log file does not contain expected message: %s", string(data))
+	}
+}
+
+// TestInitLogger_BothOutput verifies dual output mode (stderr + file).
+func TestInitLogger_BothOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	logger, closer := InitLogger("info", "json", "both", tmpDir)
+	defer closer.Close()
+	if logger == nil {
+		t.Fatal("InitLogger with both output returned nil")
+	}
+
+	logger.Info("test dual output", "key", "value")
+
+	// Verify the log file was created
+	logPath := filepath.Join(tmpDir, "agent.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("failed to read log file: %v", err)
+	}
+	if !json.Valid(data) {
+		t.Errorf("log file output is not valid JSON: %s", string(data))
+	}
+	if !strings.Contains(string(data), "test dual output") {
+		t.Errorf("log file does not contain expected message: %s", string(data))
+	}
+}
+
+// TestInitLogger_FileOutputFallback verifies graceful fallback to stderr
+// when the log directory cannot be created (e.g., invalid path).
+func TestInitLogger_FileOutputFallback(t *testing.T) {
+	// Use a path that can't be a directory (nested under a file)
+	logger, closer := InitLogger("info", "json", "file", "/dev/null/subdir")
+	defer closer.Close()
+	if logger == nil {
+		t.Fatal("InitLogger should never return nil, even on file failure")
+	}
+	// Logger should be functional (writing to stderr)
+	logger.Info("fallback test", "key", "value")
 }
 
 // TestLogConnection_Fields verifies connection log entries have correct field names.

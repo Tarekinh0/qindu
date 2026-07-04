@@ -4,7 +4,7 @@
     <!-- Agent binary and service (INSTALLDIR = %PROGRAMFILES%\Qindu\) -->
     <DirectoryRef Id="INSTALLDIR">
       <Component Id="AgentExeComponent" Guid="*" Win64="yes">
-        <File Id="AgentExe" Name="agent.exe" Source="qindu-agent.exe" KeyPath="yes" />
+        <File Id="AgentExe" Name="agent.exe" Source="agent.exe" KeyPath="yes" />
         <ServiceInstall
           Id="QinduServiceInstall"
           Name="!(loc.ServiceName)"

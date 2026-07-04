@@ -290,6 +290,33 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+// TestValidate_AgentMode verifies SR-11: agent.mode must be one of transparent, monitor, enforce.
+func TestValidate_AgentMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		wantErr bool
+	}{
+		{"valid transparent", "transparent", false},
+		{"valid monitor", "monitor", false},
+		{"valid enforce", "enforce", false},
+		{"invalid empty", "", true},
+		{"invalid detect", "detect", true},
+		{"invalid random", "block", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Agent.Mode = tt.mode
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestMergeFileOverride_ProvidersPreserved verifies PR-002:
 // Merging an override that only specifies one provider must not delete
 // other providers already present in the base config.
@@ -347,7 +374,7 @@ providers:
 // present in the override are applied without disturbing others.
 func TestMergeFileOverride_AgentFieldMerged(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Agent.Mode = "enforce"
+	cfg.Agent.Mode = "transparent"
 	cfg.Agent.FailMode = "fail_open"
 
 	tmpDir := t.TempDir()
@@ -355,7 +382,7 @@ func TestMergeFileOverride_AgentFieldMerged(t *testing.T) {
 	overrideYAML := []byte(`
 agent:
   listen_port: 9999
-  mode: "detect"
+  mode: "monitor"
 `)
 	if err := os.WriteFile(overridePath, overrideYAML, 0644); err != nil {
 		t.Fatalf("failed to write override file: %v", err)
@@ -368,8 +395,8 @@ agent:
 	if cfg.Agent.ListenPort != 9999 {
 		t.Errorf("listen_port should be overridden to 9999, got %d", cfg.Agent.ListenPort)
 	}
-	if cfg.Agent.Mode != "detect" {
-		t.Errorf("mode should be overridden to detect, got %s", cfg.Agent.Mode)
+	if cfg.Agent.Mode != "monitor" {
+		t.Errorf("mode should be overridden to monitor, got %s", cfg.Agent.Mode)
 	}
 	// These should be unchanged
 	if cfg.Agent.FailMode != "fail_open" {

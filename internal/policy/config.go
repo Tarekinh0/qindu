@@ -48,6 +48,8 @@ type LoggingConfig struct {
 	Level      string `yaml:"level"`
 	Format     string `yaml:"format"`
 	PIILogging bool   `yaml:"pii_logging"`
+	Output     string `yaml:"output"`  // "stderr" (default), "file", or "both"
+	LogDir     string `yaml:"log_dir"` // directory for log files (empty = auto-detect)
 }
 
 // LoadConfig reads and parses a YAML config file, returning the validated Config.
@@ -101,6 +103,22 @@ func (c *Config) Validate() error {
 
 	if c.Agent.ListenPort <= 0 || c.Agent.ListenPort > 65535 {
 		return fmt.Errorf("agent.listen_port must be between 1 and 65535, got: %d", c.Agent.ListenPort)
+	}
+
+	// SR-11: Validate agent.mode — must be one of transparent, monitor, enforce.
+	switch c.Agent.Mode {
+	case "transparent", "monitor", "enforce":
+		// Valid modes.
+	default:
+		return fmt.Errorf("agent.mode must be one of 'transparent', 'monitor', or 'enforce', got: %s", c.Agent.Mode)
+	}
+
+	// Validate logging.output — must be one of stderr, file, both, or empty.
+	switch c.Logging.Output {
+	case "stderr", "file", "both", "":
+		// Valid output destinations.
+	default:
+		return fmt.Errorf("logging.output must be one of 'stderr', 'file', or 'both', got: %s", c.Logging.Output)
 	}
 
 	// SR3: upstream validation must be "system" or "insecure"
@@ -212,6 +230,12 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 	if override.Logging.Format != "" {
 		c.Logging.Format = override.Logging.Format
 	}
+	if override.Logging.Output != "" {
+		c.Logging.Output = override.Logging.Output
+	}
+	if override.Logging.LogDir != "" {
+		c.Logging.LogDir = override.Logging.LogDir
+	}
 	// PIILogging: same bool zero-value problem as CertCacheEnabled — skipped.
 	// If the override YAML does not contain "pii_logging", the field stays false
 	// (zero value) and we do not overwrite the receiver's value.
@@ -224,12 +248,14 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 }
 
 // DefaultConfig returns a Config with safe defaults.
+// The default mode is "monitor" (PII detection without modification).
+// This matches the shipped YAML default to avoid dual sources of truth.
 func DefaultConfig() *Config {
 	return &Config{
 		Agent: AgentConfig{
 			ListenAddr: "127.0.0.1",
 			ListenPort: 8787,
-			Mode:       "enforce",
+			Mode:       "monitor",
 			FailMode:   "fail_open",
 		},
 		TLS: TLSConfig{
@@ -247,6 +273,8 @@ func DefaultConfig() *Config {
 			Level:      "info",
 			Format:     "json",
 			PIILogging: false,
+			Output:     "stderr",
+			LogDir:     "",
 		},
 	}
 }

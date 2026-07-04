@@ -29,6 +29,12 @@ type Engine struct {
 	maxInputLen int // reject inputs larger than this
 }
 
+// MaxInputLen returns the engine's configured maximum input length in bytes.
+// Inputs exceeding this limit are rejected with ErrInputTooLarge.
+func (e *Engine) MaxInputLen() int {
+	return e.maxInputLen
+}
+
 // NewEngine creates a new detection engine with the given recognizers.
 // Order matters for overlap resolution (first registered = higher priority
 // when all other tiebreakers are equal).

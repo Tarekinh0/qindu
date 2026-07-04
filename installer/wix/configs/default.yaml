@@ -1,7 +1,7 @@
 agent:
   listen_addr: "127.0.0.1"
   listen_port: 8787
-  mode: "enforce"           # monitor | enforce (ignored in sprint 0001)
+  mode: "monitor"           # transparent | monitor | enforce
   fail_mode: "fail_open"    # fail_open | fail_closed
 
 tls:
@@ -24,4 +24,6 @@ providers:
 logging:
   level: "info"
   format: "json"
-  pii_logging: false
+  pii_logging: true
+  output: "file"          # stderr | file | both
+  log_dir: "C:\\ProgramData\\Qindu\\logs"

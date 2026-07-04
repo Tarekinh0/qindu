@@ -187,7 +187,7 @@ items:
 
 - id: QINDU-0007
   title: "Mode Monitor (détection sans modification)"
-  status: DRAFT
+  status: READY
   adr_ref: [ADR-004]
   domains: [proxy, pii, interceptor]
   dependencies: [QINDU-0001, QINDU-0005]

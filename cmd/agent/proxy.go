@@ -18,7 +18,9 @@ import (
 // =============================================================================
 
 // runProxy starts the Qindu proxy in console or Windows service mode.
-func runProxy(explicitConfigPath string) int {
+// If forceConsole is true, service detection is bypassed and the process
+// runs in foreground console mode (useful for SSH sessions and debugging).
+func runProxy(explicitConfigPath string, forceConsole bool) int {
 	configPath, err := resolveConfigPath(explicitConfigPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -31,8 +33,12 @@ func runProxy(explicitConfigPath string) int {
 		return 1
 	}
 
-	// Initialize structured logging
-	logger := logging.InitLogger(cfg.Logging.Level, cfg.Logging.Format)
+	// Initialize structured logging with config-controlled output destination.
+	// When running as a Windows service, os.Stderr is discarded, so the user
+	// can configure "output: file" in config to persist logs to disk.
+	// The returned closer must be called on shutdown to release the log file handle.
+	logger, logCloser := logging.InitLogger(cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.Output, cfg.Logging.LogDir)
+	defer logCloser.Close()
 	logger.Info("Qindu starting",
 		"version", appVersion,
 		"listen_addr", cfg.ListenAddress(),
@@ -49,7 +55,11 @@ func runProxy(explicitConfigPath string) int {
 	certCache := qinduTls.NewCertCache()
 
 	// Create the proxy
-	proxyHandler := proxy.NewProxy(cfg, ca, certCache, logger, appVersion)
+	proxyHandler, err := proxy.NewProxy(cfg, ca, certCache, logger, appVersion)
+	if err != nil {
+		logger.Error("failed to create proxy", "error", err)
+		return 1
+	}
 
 	// Create HTTP server
 	server := &http.Server{
@@ -58,7 +68,7 @@ func runProxy(explicitConfigPath string) int {
 	}
 
 	// Start the proxy (service or console mode)
-	if err := startProxy(server, logger); err != nil {
+	if err := startProxy(server, logger, forceConsole); err != nil {
 		logger.Error("proxy failed", "error", err)
 		return 1
 	}
@@ -74,11 +84,17 @@ func initCA(cfg *policy.Config, logger *slog.Logger) (*qinduTls.CA, error) {
 }
 
 // startProxy starts the proxy in the appropriate mode (service or console).
-func startProxy(server *http.Server, logger *slog.Logger) error {
+// If forceConsole is true, runs in console mode regardless of session detection.
+func startProxy(server *http.Server, logger *slog.Logger, forceConsole bool) error {
 	isService, err := service.IsServiceSession()
 	if err != nil {
 		// Not on Windows or error checking - run in console mode
 		logger.Info("running in console mode (non-Windows or detection failed)")
+		return runConsole(server, logger)
+	}
+
+	if forceConsole {
+		logger.Info("running in console mode (forced)")
 		return runConsole(server, logger)
 	}
 
