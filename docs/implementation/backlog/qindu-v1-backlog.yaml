@@ -187,15 +187,20 @@ items:
 
 - id: QINDU-0007
   title: "Mode Monitor (détection sans modification)"
-  status: READY
+  status: DONE
   adr_ref: [ADR-004]
-  domains: [proxy, pii, interceptor]
+  domains: [proxy, pii, interceptor, logging]
   dependencies: [QINDU-0001, QINDU-0005]
   gates_required: [DPO, CISO, QA]
   human_inputs_required: []
   forbidden: [modification des requêtes en mode monitor]
-  acceptance_evidence: "Mode monitor loggue les entités détectées sans modifier le trafic. Logs structurés JSON avec entity_count, entities[], pii_values_logged=false."
-  notes: "Première utilisation réelle de l'Interceptor PII."
+  acceptance_evidence: "16/16 AC PASS. Mode monitor loggue monitor_scan par message (result: clean|pii_found). Path whitelisting (/conversation, /v1/messages, /chat/completions, generateContent, /chat/) exclut les endpoints telemetry. Logs fichier (output: file|both|stderr). SSE frame-by-frame avec agrégation. Chrome/Edge auto-proxy via HKLM policies. MSI uninstall clean (DELETEDATA=1). 6 détections réelles vérifiées sur QEMU Windows VM. Toutes gates PASS: Peer MERGE_READY, CISO PASS, DPO PASS, QA PASS, Release PASS, QEMU PASS."
+  notes: "Réponse SSE peut contenir du bruit JWT/PHONE/SECRET dû aux tokens internes ChatGPT. Résolu dans QINDU-0011 (ChatGPT adapter) qui parse la structure de la conversation et n'analyse que les champs textuels."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0007/"
+  closure_date: "2026-07-04"
+  go_version: "1.26"
+  test_count: 295
+  bugs_fixed: 0
 
 # ─── Phase 3: Vault et Réhydratation ─────────────────────────────
 
