@@ -6,132 +6,121 @@ import (
 	"fmt"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// lruMaxSize is the maximum number of entries in the PID→SID LRU cache (SR-803).
+// lruMaxSize is the maximum number of entries in the PID→LocalAppData cache (SR-803).
 const lruMaxSize = 10000
 
-// nolruEntry represents an entry in the PID→SID LRU cache.
-type nolruEntry struct {
-	pid  uint32
-	sid  string
-	prev *nolruEntry
-	next *nolruEntry
+// cacheTTL is the maximum age of a cached entry before it's considered stale.
+// PID recycling by the OS means a cached entry could be for a different process
+// after the original exits. 60 seconds is a safe bound: a new connection from
+// the same PID within 60s is almost certainly the same process, and the TTL
+// is short enough that PID recycling won't cause incorrect user attribution.
+const cacheTTL = 60 * time.Second
+
+// cacheEntry stores the resolved LocalAppData path for a PID and the time
+// it was cached.
+type cacheEntry struct {
+	localAppData string
+	ts           time.Time
 }
 
-// pidSIDCache is an LRU cache for PID→SID mappings.
-// Not persisted to disk. Evicts least-recently-used entries when full.
-// Safe for concurrent use (guarded by mu).
-type pidSIDCache struct {
-	mu      sync.RWMutex
-	entries map[uint32]*nolruEntry
-	head    *nolruEntry
-	tail    *nolruEntry
+// pidLocalAppDataCache caches PID → LocalAppData path mappings.
+// This avoids repeated OpenProcess/OpenProcessToken/SHGetKnownFolderPath
+// syscalls for the same PID on subsequent connections.
+//
+// Uses a simple map with sync.Mutex (not RWMutex) since reads may need to
+// delete stale entries. Eviction is oldest-first when the map exceeds maxSize.
+//
+// Not persisted to disk. Safe for concurrent use.
+type pidLocalAppDataCache struct {
+	mu      sync.Mutex
+	entries map[uint32]cacheEntry
 	maxSize int
 }
 
-// newPIDSIDCache creates a new LRU cache with the given max size.
-func newPIDSIDCache(maxSize int) *pidSIDCache {
-	return &pidSIDCache{
-		entries: make(map[uint32]*nolruEntry),
+// newPIDLocalAppDataCache creates a new cache with the given max size.
+func newPIDLocalAppDataCache(maxSize int) *pidLocalAppDataCache {
+	return &pidLocalAppDataCache{
+		entries: make(map[uint32]cacheEntry),
 		maxSize: maxSize,
 	}
 }
 
-// get returns the cached SID for a PID, or ("", false).
-// Moves the entry to the front (most recently used).
-func (c *pidSIDCache) get(pid uint32) (string, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// get returns the cached LocalAppData path for a PID, or ("", false).
+// Entries older than cacheTTL are considered stale and evicted.
+func (c *pidLocalAppDataCache) get(pid uint32) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	e, ok := c.entries[pid]
 	if !ok {
 		return "", false
 	}
-	c.moveToFront(e)
-	return e.sid, true
+	if time.Since(e.ts) > cacheTTL {
+		delete(c.entries, pid)
+		return "", false
+	}
+	return e.localAppData, true
 }
 
-// put stores a PID→SID mapping. Evicts LRU if cache is full.
-func (c *pidSIDCache) put(pid uint32, sid string) {
+// put stores a PID→LocalAppData mapping. Evicts the oldest entry if cache is full.
+func (c *pidLocalAppDataCache) put(pid uint32, localAppData string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if e, ok := c.entries[pid]; ok {
-		e.sid = sid
-		c.moveToFront(e)
-		return
+	c.entries[pid] = cacheEntry{
+		localAppData: localAppData,
+		ts:           time.Now(),
 	}
 
-	if len(c.entries) >= c.maxSize {
-		c.evictLRU()
-	}
-
-	e := &nolruEntry{pid: pid, sid: sid}
-	c.entries[pid] = e
-	c.pushFront(e)
-}
-
-// moveToFront moves an existing entry to the front (MRU).
-func (c *pidSIDCache) moveToFront(e *nolruEntry) {
-	if c.head == e {
-		return
-	}
-	// Unlink.
-	if e.prev != nil {
-		e.prev.next = e.next
-	}
-	if e.next != nil {
-		e.next.prev = e.prev
-	}
-	if c.tail == e {
-		c.tail = e.prev
-	}
-	// Push to front.
-	e.prev = nil
-	e.next = c.head
-	if c.head != nil {
-		c.head.prev = e
-	}
-	c.head = e
-	if c.tail == nil {
-		c.tail = e
+	if len(c.entries) > c.maxSize {
+		c.evictOldest()
 	}
 }
 
-// pushFront adds a new entry at the front (MRU).
-func (c *pidSIDCache) pushFront(e *nolruEntry) {
-	e.prev = nil
-	e.next = c.head
-	if c.head != nil {
-		c.head.prev = e
+// evictOldest removes the entry with the earliest timestamp.
+// Must be called with c.mu held.
+func (c *pidLocalAppDataCache) evictOldest() {
+	var oldestPid uint32
+	var oldestTs time.Time
+	first := true
+	for pid, e := range c.entries {
+		if first || e.ts.Before(oldestTs) {
+			oldestPid = pid
+			oldestTs = e.ts
+			first = false
+		}
 	}
-	c.head = e
-	if c.tail == nil {
-		c.tail = e
-	}
-}
-
-// evictLRU removes the least-recently-used entry (at tail).
-func (c *pidSIDCache) evictLRU() {
-	if c.tail == nil {
-		return
-	}
-	delete(c.entries, c.tail.pid)
-	if c.tail.prev != nil {
-		c.tail.prev.next = nil
-	}
-	c.tail = c.tail.prev
-	if c.tail == nil {
-		c.head = nil
+	if !first {
+		delete(c.entries, oldestPid)
 	}
 }
 
-// Global PID→SID cache shared across all lookups.
-var globalCache = newPIDSIDCache(lruMaxSize)
+// Global PID→LocalAppData cache shared across all lookups.
+var globalCache = newPIDLocalAppDataCache(lruMaxSize)
+
+// LookupOption configures vault path resolution behavior.
+type LookupOption func(*lookupConfig)
+
+// lookupConfig holds parameterized settings for vault path resolution.
+type lookupConfig struct {
+	cache *pidLocalAppDataCache
+}
+
+// WithCache injects a cache for PID→LocalAppData mappings.
+// When nil, the globalCache is used. Intended for test isolation.
+func WithCache(cache *pidLocalAppDataCache) LookupOption {
+	return func(cfg *lookupConfig) {
+		if cache != nil {
+			cfg.cache = cache
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // MIB_TCPROW_OWNER_PID — row from GetExtendedTcpTable with owning PID.
@@ -146,8 +135,16 @@ type mibTCPRowOwnerPID struct {
 	OwningPid  uint32
 }
 
+// mibUDPRowOwnerPID — row from GetExtendedUdpTable with owning PID.
+type mibUDPRowOwnerPID struct {
+	LocalAddr uint32
+	LocalPort uint32
+	OwningPid uint32
+}
+
 const (
 	tcpTableOwnerPIDAll = 5 // TCP_TABLE_OWNER_PID_ALL
+	udpTableOwnerPID    = 1 // UDP_TABLE_OWNER_PID
 	afInet              = 2 // AF_INET
 )
 
@@ -155,11 +152,33 @@ var (
 	modiphlpapi = syscall.NewLazyDLL("iphlpapi.dll")
 	//sys getExtendedTcpTable(tcpTable unsafe.Pointer, size *uint32, order bool, ulAf uint32, tableClass uint32, reserved uint32) (ret error) = iphlpapi.GetExtendedTcpTable
 	procGetExtendedTcpTable = modiphlpapi.NewProc("GetExtendedTcpTable")
+	//sys getExtendedUdpTable(udpTable unsafe.Pointer, size *uint32, order bool, ulAf uint32, tableClass uint32, reserved uint32) (ret error) = iphlpapi.GetExtendedUdpTable
+	procGetExtendedUdpTable = modiphlpapi.NewProc("GetExtendedUdpTable")
+
+	modshell32               = syscall.NewLazyDLL("shell32.dll")
+	procSHGetKnownFolderPath = modshell32.NewProc("SHGetKnownFolderPath")
 )
 
-// lookupPIDFromPort finds the PID owning a TCP connection on the given local port.
-// Uses GetExtendedTcpTable to enumerate TCP connections.
+// lookupPIDFromPort finds the PID owning a connection on the given local port.
+// Queries both TCP and UDP tables (DD-13). TCP is checked first since HTTP CONNECT
+// traffic is TCP-based; UDP is checked as a fallback for QUIC/HTTP3 connections.
 func lookupPIDFromPort(srcPort uint16) (uint32, error) {
+	pid, err := lookupPIDFromTCPPort(srcPort)
+	if err == nil {
+		return pid, nil
+	}
+
+	pid, err = lookupPIDFromUDPPort(srcPort)
+	if err == nil {
+		return pid, nil
+	}
+
+	return 0, fmt.Errorf("session: no TCP or UDP connection found for port %d", srcPort)
+}
+
+// lookupPIDFromTCPPort finds the PID owning a TCP connection on the given local port.
+// Uses GetExtendedTcpTable to enumerate TCP connections.
+func lookupPIDFromTCPPort(srcPort uint16) (uint32, error) {
 	// First call to get required buffer size.
 	var bufSize uint32
 	ret, _, _ := procGetExtendedTcpTable.Call(
@@ -215,6 +234,64 @@ func lookupPIDFromPort(srcPort uint16) (uint32, error) {
 	return 0, fmt.Errorf("session: no TCP connection found for port %d", srcPort)
 }
 
+// lookupPIDFromUDPPort finds the PID owning a UDP socket on the given local port.
+// Uses GetExtendedUdpTable to enumerate UDP connections.
+// UDP is unlikely for HTTP CONNECT but possible for QUIC/HTTP3 (DD-13).
+func lookupPIDFromUDPPort(srcPort uint16) (uint32, error) {
+	// First call to get required buffer size.
+	var bufSize uint32
+	ret, _, _ := procGetExtendedUdpTable.Call(
+		0, // pUdpTable = nil
+		uintptr(unsafe.Pointer(&bufSize)),
+		1, // order = true (sort)
+		uintptr(afInet),
+		uintptr(udpTableOwnerPID),
+		0, // reserved
+	)
+	if ret != uintptr(syscall.ERROR_INSUFFICIENT_BUFFER) {
+		return 0, fmt.Errorf("session: GetExtendedUdpTable sizing failed: %d", ret)
+	}
+
+	// Allocate buffer.
+	buf := make([]byte, bufSize)
+
+	// Second call to fill the table.
+	ret, _, _ = procGetExtendedUdpTable.Call(
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&bufSize)),
+		1,
+		uintptr(afInet),
+		uintptr(udpTableOwnerPID),
+		0,
+	)
+	if ret != 0 {
+		return 0, fmt.Errorf("session: GetExtendedUdpTable failed: %d", ret)
+	}
+
+	// Parse table: first 4 bytes = numEntries, then array of MIB_UDPROW_OWNER_PID.
+	if len(buf) < 4 {
+		return 0, fmt.Errorf("session: UDP table too short")
+	}
+	numEntries := *(*uint32)(unsafe.Pointer(&buf[0]))
+	rowSize := uint32(unsafe.Sizeof(mibUDPRowOwnerPID{}))
+	rowsStart := 4 // skip DWORD
+
+	for i := uint32(0); i < numEntries; i++ {
+		offset := rowsStart + int(i*rowSize)
+		if offset+int(rowSize) > len(buf) {
+			break
+		}
+		row := (*mibUDPRowOwnerPID)(unsafe.Pointer(&buf[offset]))
+		// LocalPort is in network byte order (big-endian) within the uint32.
+		actualPort := uint16(row.LocalPort>>8) | uint16(row.LocalPort<<8)
+		if actualPort == srcPort {
+			return row.OwningPid, nil
+		}
+	}
+
+	return 0, fmt.Errorf("session: no UDP socket found for port %d", srcPort)
+}
+
 // LookupVaultPath returns the vault path for the current user.
 // Uses the current process user's profile path.
 // For service mode with per-user isolation (connection context required),
@@ -240,25 +317,40 @@ func lookupCurrentUserVaultPath() (*ResolvedUser, error) {
 }
 
 // LookupVaultPathForPort resolves the vault path for a connection from the given source port.
-// Finds the PID from the TCP table, resolves to user SID, and derives the vault path.
+// Finds the PID from both TCP and UDP tables (DD-13), resolves to the user's LocalAppData
+// path via OpenProcessToken + SHGetKnownFolderPath, and derives the vault path.
+//
+// Options:
+//   - WithCache(*pidLocalAppDataCache): inject a test cache. Defaults to globalCache if nil.
 //
 // On failure, returns an error. Caller must close the connection.
 // There is NO fallback to a machine-level vault (SR-805).
-func LookupVaultPathForPort(srcPort uint16) (*ResolvedUser, error) {
-	// Find PID from TCP table.
+func LookupVaultPathForPort(srcPort uint16, opts ...LookupOption) (*ResolvedUser, error) {
+	cfg := lookupConfig{cache: globalCache}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	// Find PID from TCP table (checked first) or UDP table (fallback).
 	pid, err := lookupPIDFromPort(srcPort)
 	if err != nil {
 		return nil, fmt.Errorf("session: cannot resolve PID for port %d: %w", srcPort, err)
 	}
 
-	return resolvePathFromPID(pid)
+	return resolvePathFromPID(pid, cfg.cache)
 }
 
-// resolvePathFromPID resolves a PID to a user SID and vault path.
-func resolvePathFromPID(pid uint32) (*ResolvedUser, error) {
-	// Check LRU cache first.
-	if cachedSID, ok := globalCache.get(pid); ok {
-		return resolvePathFromSID(cachedSID)
+// resolvePathFromPID resolves a PID to a user's LocalAppData and vault path.
+// Uses SHGetKnownFolderPath with the process token to determine the correct
+// LocalAppData path regardless of drive letter or Windows localization (PR-003).
+// cache is the PID→LocalAppData cache to use (nil defaults to globalCache).
+func resolvePathFromPID(pid uint32, cache *pidLocalAppDataCache) (*ResolvedUser, error) {
+	if cache == nil {
+		cache = globalCache
+	}
+	// Check cache first (TTL-aware, PR-001, PR-106).
+	if cached, ok := cache.get(pid); ok {
+		return buildResolvedUser(cached), nil
 	}
 
 	// Open the process.
@@ -280,51 +372,44 @@ func resolvePathFromPID(pid uint32) (*ResolvedUser, error) {
 	}
 	defer token.Close()
 
-	// Get the token user SID.
-	tokenUser, err := token.GetTokenUser()
+	// Get LocalAppData for this user using SHGetKnownFolderPath with the
+	// user's token. This correctly resolves the path regardless of drive
+	// letter, user profile directory location, or Windows localization (PR-003).
+	localAppData, err := getLocalAppDataForToken(token)
 	if err != nil {
-		return nil, fmt.Errorf("session: GetTokenUser(PID=%d) failed: %w", pid, err)
+		return nil, err
 	}
 
-	sidStr := tokenUser.User.Sid.String()
+	// Cache the mapping (PR-001, PR-106: TTL-aware, sync.Mutex).
+	cache.put(pid, localAppData)
 
-	// Cache the mapping.
-	globalCache.put(pid, sidStr)
-
-	return resolvePathFromSID(sidStr)
+	return buildResolvedUser(localAppData), nil
 }
 
-// resolvePathFromSID derives the vault path for a given SID string.
-// Uses LookupAccountSid to convert the SID to a username, then constructs
-// the standard profile path: C:\Users\{username}\AppData\Local\Qindu.
-func resolvePathFromSID(sidStr string) (*ResolvedUser, error) {
-	sid, err := windows.StringToSid(sidStr)
-	if err != nil {
-		return nil, fmt.Errorf("session: invalid SID %s: %w", sidStr, err)
+// getLocalAppDataForToken calls SHGetKnownFolderPath with FOLDERID_LocalAppData
+// using the specified token. Returns the absolute path to the user's
+// AppData\Local directory.
+func getLocalAppDataForToken(token windows.Token) (string, error) {
+	var pszPath *uint16
+	r0, _, _ := procSHGetKnownFolderPath.Call(
+		uintptr(unsafe.Pointer(windows.FOLDERID_LocalAppData)),
+		uintptr(windows.KF_FLAG_CREATE),
+		uintptr(token),
+		uintptr(unsafe.Pointer(&pszPath)),
+	)
+	if r0 != 0 {
+		return "", fmt.Errorf("session: SHGetKnownFolderPath failed: HRESULT 0x%x", r0)
 	}
+	defer windows.CoTaskMemFree(unsafe.Pointer(pszPath))
+	return windows.UTF16PtrToString(pszPath), nil
+}
 
-	// Look up the username from the SID via LookupAccountSid.
-	// Standard two-call pattern: first call with nil buffers to get sizes.
-	var nameLen, domainLen uint32
-	var sidNameUse uint32
-	_ = windows.LookupAccountSid(nil, sid, nil, &nameLen, nil, &domainLen, &sidNameUse)
-	// First call is expected to fail with ERROR_INSUFFICIENT_BUFFER (122);
-	// nameLen and domainLen are populated with the required buffer sizes.
-
-	nameBuf := make([]uint16, nameLen)
-	domainBuf := make([]uint16, domainLen)
-
-	err = windows.LookupAccountSid(nil, sid, &nameBuf[0], &nameLen, &domainBuf[0], &domainLen, &sidNameUse)
-	if err != nil {
-		return nil, fmt.Errorf("session: LookupAccountSid failed for %s: %w", sidStr, err)
-	}
-
-	username := windows.UTF16ToString(nameBuf)
-	baseDir := fmt.Sprintf("C:\\Users\\%s\\AppData\\Local\\Qindu", username)
-
+// buildResolvedUser constructs a ResolvedUser from a LocalAppData path.
+func buildResolvedUser(localAppData string) *ResolvedUser {
+	baseDir := localAppData + "\\Qindu"
 	return &ResolvedUser{
 		VaultPath: baseDir,
 		KeyPath:   baseDir + "\\vault.key",
 		DBPath:    baseDir + "\\vault.db",
-	}, nil
+	}
 }

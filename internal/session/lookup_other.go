@@ -25,7 +25,11 @@ func LookupVaultPath() (*ResolvedUser, error) {
 		baseDir = filepath.Join(home, "Library", "Application Support", "Qindu")
 	} else {
 		// Linux and other Unix: XDG_DATA_HOME or ~/.local/share
-		baseDir = xdgDataHome()
+		var err error
+		baseDir, err = xdgDataHome()
+		if err != nil {
+			return nil, err
+		}
 		baseDir = filepath.Join(baseDir, "qindu")
 	}
 
@@ -37,14 +41,15 @@ func LookupVaultPath() (*ResolvedUser, error) {
 }
 
 // xdgDataHome returns $XDG_DATA_HOME or ~/.local/share.
-func xdgDataHome() string {
+// If neither is available, returns an error instead of falling back to a temp
+// directory (PR-005 — fixes insecure /tmp fallback).
+func xdgDataHome() (string, error) {
 	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return dir
+		return dir, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// Extreme fallback — shouldn't happen on modern OS.
-		return filepath.Join(os.TempDir(), ".local", "share")
+		return "", fmt.Errorf("session: cannot determine home directory (HOME unset): %w", err)
 	}
-	return filepath.Join(home, ".local", "share")
+	return filepath.Join(home, ".local", "share"), nil
 }
