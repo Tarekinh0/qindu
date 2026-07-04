@@ -36,6 +36,6 @@ providers:
 logging:
   level: "info"
   format: "json"
-  pii_logging: true
+  pii_logging: false
   output: "stderr"          # stderr | file | both
   log_dir: ""               # empty = auto-detect (C:\ProgramData\Qindu\logs on Windows)

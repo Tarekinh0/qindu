@@ -461,13 +461,17 @@ func TestVaultTTLValidation(t *testing.T) {
 		{"valid 168h default", "168h", false},
 		{"valid 720h", "720h", false},
 		{"valid empty uses default", "", false},
-		// Invalid
+		// Invalid (not in AC-8 whitelist)
 		{"invalid negative", "-5h", true},
 		{"invalid unparseable", "15x", true},
 		{"invalid sub-hour", "30m", true},
 		{"invalid non-integer hours", "1h30m", true},
 		{"invalid minutes only", "90m", true},
 		{"invalid garbage", "forever", true},
+		{"invalid 500h not whitelisted", "500h", true},
+		{"invalid 1h not whitelisted", "1h", true},
+		{"invalid 25h not whitelisted", "25h", true},
+		{"invalid 9999h not whitelisted", "9999h", true},
 	}
 
 	for _, tt := range tests {

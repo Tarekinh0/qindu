@@ -181,39 +181,61 @@ func (c *Config) Validate() error {
 // Valid: "0" (infinite), "24h", "168h", "720h".
 // Rejects: negative, sub-hour, unparseable, or non-hour durations.
 func (v *VaultConfig) Validate() error {
-	// Empty or unset TTL defaults to 168h (handled elsewhere), not an error.
+	_, err := v.ParseTTL()
+	return err
+}
+
+// ParseTTL parses the vault TTL string into a time.Duration.
+// Valid per AC-8: "0" (infinite), "24h", "168h" (default), "720h".
+// Returns an error for any other value.
+func (v *VaultConfig) ParseTTL() (time.Duration, error) {
+	// Empty or unset TTL defaults to 168h.
 	if v.TTL == "" {
-		return nil
+		return 168 * time.Hour, nil
 	}
 
 	// "0" means infinite — accepted with warning at agent startup.
 	if v.TTL == "0" {
-		return nil
+		return 0, nil
+	}
+
+	// AC-8 whitelist: only these three TTL durations are valid.
+	// This must be checked before ParseDuration to ensure any value
+	// outside the whitelist is rejected with a clear error message,
+	// regardless of whether it happens to parse as a valid duration.
+	switch v.TTL {
+	case "24h", "168h", "720h":
+		// fall through to parse
+	default:
+		return 0, fmt.Errorf("ttl must be one of '0', '24h', '168h', '720h', got: %q", v.TTL)
 	}
 
 	d, err := time.ParseDuration(v.TTL)
 	if err != nil {
-		return fmt.Errorf("ttl must be a valid Go duration (e.g., '24h', '168h'), got: %q", v.TTL)
+		return 0, fmt.Errorf("ttl must be a valid Go duration (e.g., '24h', '168h'), got: %q", v.TTL)
 	}
+
+	// Defense-in-depth: the whitelist above already guarantees these are
+	// positive whole-hour durations, but these checks remain in case the
+	// whitelist is modified in the future.
 
 	// Reject negative durations.
 	if d < 0 {
-		return fmt.Errorf("ttl must not be negative, got: %q", v.TTL)
+		return 0, fmt.Errorf("ttl must not be negative, got: %q", v.TTL)
 	}
 
 	// Reject sub-hour durations.
 	if d < time.Hour {
-		return fmt.Errorf("ttl must be at least 1h, got: %q", v.TTL)
+		return 0, fmt.Errorf("ttl must be at least 1h, got: %q", v.TTL)
 	}
 
 	// Reject non-hour-based durations (e.g., "30m", "1h30m").
-	// Only pure hour durations like "24h", "168h" are accepted.
 	hours := d.Hours()
 	if hours != float64(int(hours)) {
-		return fmt.Errorf("ttl must be a whole number of hours (e.g., '24h', '168h'), got: %q", v.TTL)
+		return 0, fmt.Errorf("ttl must be a whole number of hours (e.g., '24h', '168h'), got: %q", v.TTL)
 	}
 
-	return nil
+	return d, nil
 }
 
 // AllAIDomains returns a flat, deduplicated list of all enabled AI provider domains.
