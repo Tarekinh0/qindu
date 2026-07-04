@@ -448,6 +448,40 @@ func TestMergeFileOverride_MissingFile(t *testing.T) {
 	}
 }
 
+// TestVaultTTLValidation verifies TTL validation per AC-8 and T-815.
+func TestVaultTTLValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		ttl     string
+		wantErr bool
+	}{
+		// Valid
+		{"valid 0 infinite", "0", false},
+		{"valid 24h", "24h", false},
+		{"valid 168h default", "168h", false},
+		{"valid 720h", "720h", false},
+		{"valid empty uses default", "", false},
+		// Invalid
+		{"invalid negative", "-5h", true},
+		{"invalid unparseable", "15x", true},
+		{"invalid sub-hour", "30m", true},
+		{"invalid non-integer hours", "1h30m", true},
+		{"invalid minutes only", "90m", true},
+		{"invalid garbage", "forever", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Agent.Vault.TTL = tt.ttl
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestMergeFileOverride_InvalidYAML verifies error handling for bad YAML in override.
 func TestMergeFileOverride_InvalidYAML(t *testing.T) {
 	cfg := DefaultConfig()

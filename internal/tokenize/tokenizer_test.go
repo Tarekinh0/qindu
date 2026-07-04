@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Tarekinh0/qindu/internal/pii"
+	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // newTestEngine creates a PII detection engine with all recognizers
@@ -1024,5 +1025,200 @@ func TestSubstituteEntities_VariableLengths(t *testing.T) {
 	expected = "<<EMAIL_1>> <<EMAIL_2>> <<EMAIL_3>>"
 	if result != expected {
 		t.Errorf("multiple: expected %q, got %q", expected, result)
+	}
+}
+
+// =============================================================================
+// TokenPersister integration tests (QINDU-0008, AC-9, DPO-R11)
+// =============================================================================
+
+// mockPersister implements vault.TokenPersister for testing.
+// Captures calls so tests can verify correct invocation.
+type mockPersister struct {
+	mu       sync.Mutex
+	persists []persistCall
+	metas    []metaCall
+}
+
+type persistCall struct {
+	Scope vault.Scope
+	Token string
+	Value []byte
+}
+
+type metaCall struct {
+	Scope vault.Scope
+	Meta  vault.Metadata
+}
+
+func (m *mockPersister) Persist(scope vault.Scope, token string, value []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Copy the value to avoid aliasing.
+	valCopy := make([]byte, len(value))
+	copy(valCopy, value)
+	m.persists = append(m.persists, persistCall{Scope: scope, Token: token, Value: valCopy})
+	return nil
+}
+
+func (m *mockPersister) UpdateMeta(scope vault.Scope, meta vault.Metadata) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metas = append(m.metas, metaCall{Scope: scope, Meta: meta})
+	return nil
+}
+
+func (m *mockPersister) persistCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.persists)
+}
+
+// TestPersister_CalledWithCorrectValues verifies the persister is called with correct values (T-801-adjacent).
+func TestPersister_CalledWithCorrectValues(t *testing.T) {
+	eng := newTestEngine(t)
+	mock := &mockPersister{}
+	tok := New(eng,
+		WithLogger(discardLogger()),
+		WithPersister(mock),
+		WithProvider("chatgpt"),
+		WithConversationID("550e8400-e29b-41d4-a716-446655440000"),
+	)
+
+	_, err := tok.Tokenize("alice@example.com +33199000000")
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+
+	if mock.persistCount() != 2 {
+		t.Fatalf("expected 2 persists, got %d", mock.persistCount())
+	}
+
+	// Check first persist — email.
+	p1 := mock.persists[0]
+	if p1.Scope.Provider != "chatgpt" {
+		t.Errorf("expected provider 'chatgpt', got %q", p1.Scope.Provider)
+	}
+	if p1.Scope.ConversationID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("unexpected conversation ID: %q", p1.Scope.ConversationID)
+	}
+	if p1.Token != "<<EMAIL_1>>" {
+		t.Errorf("expected token <<EMAIL_1>>, got %q", p1.Token)
+	}
+	if string(p1.Value) != "alice@example.com" {
+		t.Errorf("expected value 'alice@example.com', got %q", string(p1.Value))
+	}
+
+	// Check second persist — phone.
+	p2 := mock.persists[1]
+	if p2.Token != "<<PHONE_1>>" {
+		t.Errorf("expected token <<PHONE_1>>, got %q", p2.Token)
+	}
+	if string(p2.Value) != "+33199000000" {
+		t.Errorf("expected value '+33199000000', got %q", string(p2.Value))
+	}
+}
+
+// TestPersister_NilPersisterNoPanic verifies nil persister does not panic (AC-9, DPO-R11).
+func TestPersister_NilPersisterNoPanic(t *testing.T) {
+	eng := newTestEngine(t)
+	// No WithPersister — defaults to nil.
+	tok := New(eng, WithLogger(discardLogger()))
+
+	result, err := tok.Tokenize("alice@example.com")
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+	if !strings.Contains(result, "<<EMAIL_1>>") {
+		t.Errorf("expected tokenization to work with nil persister, got: %s", result)
+	}
+	// Round-trip should still work.
+	rehydrated := tok.Rehydrate(result)
+	if rehydrated != "alice@example.com" {
+		t.Errorf("round-trip failed with nil persister: got %q", rehydrated)
+	}
+}
+
+// TestPersister_DuplicateValuesPersistedOnce verifies duplicates are not re-persisted.
+func TestPersister_DuplicateValuesPersistedOnce(t *testing.T) {
+	eng := newTestEngine(t)
+	mock := &mockPersister{}
+	tok := New(eng,
+		WithLogger(discardLogger()),
+		WithPersister(mock),
+		WithProvider("claude"),
+		WithConversationID("00000000-0000-4000-8000-000000000001"),
+	)
+
+	// Same email appears twice.
+	_, err := tok.Tokenize("alice@example.com and alice@example.com again")
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+
+	// Should only persist one token, not two.
+	if mock.persistCount() != 1 {
+		t.Errorf("expected 1 persist for duplicate value, got %d", mock.persistCount())
+	}
+	if mock.persists[0].Token != "<<EMAIL_1>>" {
+		t.Errorf("expected <<EMAIL_1>>, got %q", mock.persists[0].Token)
+	}
+}
+
+// TestPersister_ProviderAndConvIDSetCorrectly verifies provider/convID are set correctly.
+func TestPersister_ProviderAndConvIDSetCorrectly(t *testing.T) {
+	eng := newTestEngine(t)
+	mock := &mockPersister{}
+	tok := New(eng,
+		WithLogger(discardLogger()),
+		WithPersister(mock),
+		WithProvider("gemini"),
+		WithConversationID("11111111-1111-4111-8111-111111111111"),
+	)
+
+	_, err := tok.Tokenize("bob@test.invalid")
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+
+	if mock.persistCount() != 1 {
+		t.Fatalf("expected 1 persist, got %d", mock.persistCount())
+	}
+	p := mock.persists[0]
+	if p.Scope.Provider != "gemini" {
+		t.Errorf("expected provider 'gemini', got %q", p.Scope.Provider)
+	}
+	if p.Scope.ConversationID != "11111111-1111-4111-8111-111111111111" {
+		t.Errorf("unexpected conversation ID: %q", p.Scope.ConversationID)
+	}
+}
+
+// TestPersister_OptionOrderingDoesNotMatter verifies options can be set in any order.
+func TestPersister_OptionOrderingDoesNotMatter(t *testing.T) {
+	eng := newTestEngine(t)
+	mock := &mockPersister{}
+
+	// Set provider and convID before persister.
+	tok := New(eng,
+		WithProvider("chatgpt"),
+		WithConversationID("abcd1234"),
+		WithLogger(discardLogger()),
+		WithPersister(mock),
+	)
+
+	_, err := tok.Tokenize("alice@example.com")
+	if err != nil {
+		t.Fatalf("Tokenize: %v", err)
+	}
+
+	if mock.persistCount() != 1 {
+		t.Fatalf("expected 1 persist, got %d", mock.persistCount())
+	}
+	p := mock.persists[0]
+	if p.Scope.Provider != "chatgpt" {
+		t.Errorf("expected provider 'chatgpt', got %q", p.Scope.Provider)
+	}
+	if p.Scope.ConversationID != "abcd1234" {
+		t.Errorf("unexpected conversation ID: %q", p.Scope.ConversationID)
 	}
 }

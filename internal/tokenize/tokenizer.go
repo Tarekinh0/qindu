@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/Tarekinh0/qindu/internal/pii"
+	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // buildTokenPattern returns a strict regex for matching <<TYPE_N>> tokens,
@@ -67,6 +68,16 @@ type Tokenizer struct {
 	valueToToken map[string]string
 	logger       *slog.Logger
 	mu           sync.Mutex // protects counters and valueToToken
+
+	// persister is an optional subscriber for persistent storage of token↔PII mappings.
+	// When nil (default), the tokenizer operates in memory-only mode with unchanged behavior.
+	persister vault.TokenPersister
+
+	// provider is the AI provider name (e.g., "chatgpt"), used as the vault scope.
+	provider string
+
+	// convID is the proxy-generated UUID for the conversation, used as the vault scope.
+	convID string
 }
 
 // Option configures a Tokenizer.
@@ -88,6 +99,32 @@ func WithLogger(logger *slog.Logger) Option {
 		if logger != nil {
 			t.logger = logger
 		}
+	}
+}
+
+// WithPersister injects a TokenPersister for persistent vault storage.
+// When nil (default), the tokenizer operates in memory-only mode with unchanged behavior.
+// The persister is called asynchronously after the in-memory store write,
+// so the proxy thread never blocks on disk I/O (DD-10, DD-11).
+func WithPersister(p vault.TokenPersister) Option {
+	return func(t *Tokenizer) {
+		t.persister = p
+	}
+}
+
+// WithProvider sets the AI provider name for the vault scope (DD-8).
+// The provider name is used to scope conversations in the vault.
+func WithProvider(provider string) Option {
+	return func(t *Tokenizer) {
+		t.provider = provider
+	}
+}
+
+// WithConversationID sets the proxy-generated conversation UUID for the vault scope (DD-8).
+// This UUID is used as the bbolt key prefix for conversation-scoped storage.
+func WithConversationID(convID string) Option {
+	return func(t *Tokenizer) {
+		t.convID = convID
 	}
 }
 
@@ -173,6 +210,15 @@ func (t *Tokenizer) assignTokens(entities []pii.Entity) []string {
 		// Store both directions.
 		t.valueToToken[e.Value] = token
 		t.store.Map(token, e.Value)
+
+		// Fire-and-forget persistence to vault (async, non-blocking).
+		if t.persister != nil {
+			scope := vault.Scope{Provider: t.provider, ConversationID: t.convID}
+			// Persist is non-blocking (buffered channel send).
+			// Ignore errors — vault write failures are logged internally
+			// and do not affect proxy operation (DD-10).
+			_ = t.persister.Persist(scope, token, []byte(e.Value))
+		}
 	}
 	return tokens
 }

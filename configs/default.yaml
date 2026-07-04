@@ -10,6 +10,11 @@ agent:
       - "/chat/completions"   # DeepSeek, OpenAI-compatible APIs
       - "generateContent"      # Gemini (matches :generateContent or /generateContent)
       - "/chat/"              # Copilot, various chat endpoints
+  vault:
+    ttl: 168h   # 24h, 168h (7 days, default), 0 = infinite (WARNING: PII persists indefinitely)
+    # TTL enforcement via startup sweep + background sweeper (interval = min(ttl/7, 24h))
+    # + access-time check. If proxy is stopped before a sweep fires,
+    # data may briefly persist beyond configured TTL.
 
 tls:
   ca_name: "Qindu AI Privacy CA"

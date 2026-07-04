@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,6 +23,11 @@ type MonitorConfig struct {
 	ScanPaths []string `yaml:"scan_paths"`
 }
 
+// VaultConfig holds vault (persistent encrypted storage) settings.
+type VaultConfig struct {
+	TTL string `yaml:"ttl"` // "24h", "168h" (default), "720h", "0" = infinite (WARNING logged)
+}
+
 // AgentConfig holds agent-level settings.
 type AgentConfig struct {
 	ListenAddr string        `yaml:"listen_addr"`
@@ -29,6 +35,7 @@ type AgentConfig struct {
 	FailMode   string        `yaml:"fail_mode"`
 	ListenPort int           `yaml:"listen_port"`
 	Monitor    MonitorConfig `yaml:"monitor"`
+	Vault      VaultConfig   `yaml:"vault"`
 }
 
 // TLSConfig holds TLS/CA settings.
@@ -162,6 +169,50 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("tls.ca_key_algorithm must be 'ECDSA_P256', got: %s", c.TLS.CAKeyAlgorithm)
 	}
 
+	// Validate vault TTL if configured.
+	if err := c.Agent.Vault.Validate(); err != nil {
+		return fmt.Errorf("invalid agent.vault config: %w", err)
+	}
+
+	return nil
+}
+
+// Validate checks the vault TTL config and returns an error for invalid values.
+// Valid: "0" (infinite), "24h", "168h", "720h".
+// Rejects: negative, sub-hour, unparseable, or non-hour durations.
+func (v *VaultConfig) Validate() error {
+	// Empty or unset TTL defaults to 168h (handled elsewhere), not an error.
+	if v.TTL == "" {
+		return nil
+	}
+
+	// "0" means infinite — accepted with warning at agent startup.
+	if v.TTL == "0" {
+		return nil
+	}
+
+	d, err := time.ParseDuration(v.TTL)
+	if err != nil {
+		return fmt.Errorf("ttl must be a valid Go duration (e.g., '24h', '168h'), got: %q", v.TTL)
+	}
+
+	// Reject negative durations.
+	if d < 0 {
+		return fmt.Errorf("ttl must not be negative, got: %q", v.TTL)
+	}
+
+	// Reject sub-hour durations.
+	if d < time.Hour {
+		return fmt.Errorf("ttl must be at least 1h, got: %q", v.TTL)
+	}
+
+	// Reject non-hour-based durations (e.g., "30m", "1h30m").
+	// Only pure hour durations like "24h", "168h" are accepted.
+	hours := d.Hours()
+	if hours != float64(int(hours)) {
+		return fmt.Errorf("ttl must be a whole number of hours (e.g., '24h', '168h'), got: %q", v.TTL)
+	}
+
 	return nil
 }
 
@@ -227,6 +278,10 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 	if len(override.Agent.Monitor.ScanPaths) > 0 {
 		c.Agent.Monitor.ScanPaths = override.Agent.Monitor.ScanPaths
 	}
+	// Merge vault settings.
+	if override.Agent.Vault.TTL != "" {
+		c.Agent.Vault.TTL = override.Agent.Vault.TTL
+	}
 
 	// Merge TLS settings
 	if override.TLS.CAName != "" {
@@ -290,6 +345,9 @@ func DefaultConfig() *Config {
 			FailMode:   "fail_open",
 			Monitor: MonitorConfig{
 				ScanPaths: defaultMonitorScanPaths(),
+			},
+			Vault: VaultConfig{
+				TTL: "168h",
 			},
 		},
 		TLS: TLSConfig{

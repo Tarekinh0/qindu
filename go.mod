@@ -3,6 +3,7 @@ module github.com/Tarekinh0/qindu
 go 1.26
 
 require (
+	go.etcd.io/bbolt v1.5.0
 	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
 )

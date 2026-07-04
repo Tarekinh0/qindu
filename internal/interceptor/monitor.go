@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Tarekinh0/qindu/internal/pii"
+	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // maxLogPathLen is the maximum length for the path field in detection logs.
@@ -43,6 +44,7 @@ type MonitorInterceptor struct {
 	maxInputLen int
 	piiLogging  bool
 	scanPaths   []string
+	persister   vault.TokenPersister // optional vault-backed persistence (QINDU-0008)
 }
 
 // NewMonitorInterceptor creates a new MonitorInterceptor.
@@ -53,10 +55,11 @@ type MonitorInterceptor struct {
 //   - logger: structured JSON logger for detection log output
 //   - scanPaths: list of URL path substrings to scan (case-insensitive); paths not
 //     matching this whitelist are skipped entirely
+//   - persister: optional vault-backed token persistence (nil = memory-only, QINDU-0008)
 //
 // The engine's max input size is read directly from the engine instance,
 // eliminating the redundant parameter (PR-102).
-func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Logger, scanPaths []string) *MonitorInterceptor {
+func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Logger, scanPaths []string, persister vault.TokenPersister) *MonitorInterceptor {
 	if len(scanPaths) == 0 {
 		scanPaths = defaultScanPaths()
 	}
@@ -66,6 +69,7 @@ func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Log
 		maxInputLen: engine.MaxInputLen(),
 		piiLogging:  piiLogging,
 		scanPaths:   scanPaths,
+		persister:   persister,
 	}
 }
 
