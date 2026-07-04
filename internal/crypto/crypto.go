@@ -14,11 +14,12 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 )
 
 // nonceSize is the GCM standard nonce length (12 bytes / 96 bits).
@@ -81,6 +82,7 @@ func New(keyPath string) (*Service, error) {
 // Returns nonce || ciphertext || tag. The nonce is 12 bytes prepended.
 // Each call generates a unique nonce from crypto/rand.
 func (s *Service) Encrypt(plaintext []byte) ([]byte, error) {
+	// nonce slice is passed as dst to Seal — single allocation in practice.
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("crypto: failed to generate nonce: %w", err)
@@ -128,10 +130,6 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	if err == nil {
 		// File exists — validate length and permissions.
 		if len(data) != KeySize {
-			hexLen := hex.EncodeToString(data)
-			if len(hexLen) > 32 {
-				hexLen = hexLen[:32] + "..."
-			}
 			return nil, fmt.Errorf("crypto: key file %s has wrong size: got %d bytes, expected %d",
 				path, len(data), KeySize)
 		}
@@ -155,7 +153,7 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	}
 
 	// Ensure parent directory exists (dirname of the key file).
-	if err := os.MkdirAll(dirOf(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		zeroBytes(key)
 		return nil, fmt.Errorf("crypto: failed to create key directory: %w", err)
 	}
@@ -166,16 +164,6 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	}
 
 	return key, nil
-}
-
-// dirOf returns the directory portion of a file path.
-func dirOf(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' || path[i] == '\\' {
-			return path[:i]
-		}
-	}
-	return "."
 }
 
 // writeKeyFile writes the 32-byte key to disk with mode 0600.
@@ -191,14 +179,40 @@ func writeKeyFile(path string, key []byte) error {
 		return fmt.Errorf("crypto: failed to write key file: %w", err)
 	}
 
+	// Ensure key data is durably written to disk before returning (PR-109).
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("crypto: failed to sync key file: %w", err)
+	}
+
 	// Ensure mode is 0600 even if umask interfered.
 	if err := f.Chmod(0600); err != nil {
 		return fmt.Errorf("crypto: failed to set key file permissions: %w", err)
 	}
 
-	// Platform-specific ACL.
-	if err := setPlatformACL(path); err != nil {
-		return fmt.Errorf("crypto: failed to set platform ACL: %w", err)
+	return nil
+}
+
+// validateKeyFilePermissions checks that the key file has mode exactly 0600.
+// On Unix, this is the primary access control mechanism.
+// On Windows, %LOCALAPPDATA% already has restrictive ACLs enforced by the OS
+// (only the user + SYSTEM can access their own profile), so this check is
+// informational rather than security-critical.
+func validateKeyFilePermissions(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("crypto: failed to stat key file: %w", err)
+	}
+
+	mode := info.Mode().Perm()
+	// On Windows, os.Stat().Mode().Perm() may return 0666 or other values
+	// because Unix permission bits don't map cleanly to Windows ACLs.
+	// Only enforce 0600 on Unix platforms.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if mode != 0600 {
+		return fmt.Errorf("crypto: key file %s has unsafe permissions %04o, expected 0600. "+
+			"Fix with: chmod 0600 %s", path, mode, path)
 	}
 
 	return nil
