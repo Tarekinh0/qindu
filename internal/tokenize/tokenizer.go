@@ -215,9 +215,9 @@ func (t *Tokenizer) assignTokens(entities []pii.Entity) []string {
 		if t.persister != nil {
 			scope := vault.Scope{Provider: t.provider, ConversationID: t.convID}
 			// Persist is non-blocking (buffered channel send).
-			// Ignore errors — vault write failures are logged internally
+			// Fire-and-forget — vault write failures are logged internally
 			// and do not affect proxy operation (DD-10).
-			_ = t.persister.Persist(scope, token, []byte(e.Value))
+			t.persister.Persist(scope, token, []byte(e.Value))
 		}
 	}
 	return tokens

@@ -1051,21 +1051,19 @@ type metaCall struct {
 	Meta  vault.Metadata
 }
 
-func (m *mockPersister) Persist(scope vault.Scope, token string, value []byte) error {
+func (m *mockPersister) Persist(scope vault.Scope, token string, value []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Copy the value to avoid aliasing.
 	valCopy := make([]byte, len(value))
 	copy(valCopy, value)
 	m.persists = append(m.persists, persistCall{Scope: scope, Token: token, Value: valCopy})
-	return nil
 }
 
-func (m *mockPersister) UpdateMeta(scope vault.Scope, meta vault.Metadata) error {
+func (m *mockPersister) UpdateMeta(scope vault.Scope, meta vault.Metadata) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.metas = append(m.metas, metaCall{Scope: scope, Meta: meta})
-	return nil
 }
 
 func (m *mockPersister) persistCount() int {
