@@ -64,7 +64,11 @@ type Scope struct {
 bbolt keys (`provider/uuid/token` and `provider/uuid/__meta__`) are plaintext. Values are AES-256-GCM ciphertext. Metadata (provider name, timestamps, PII counts) is not PII — plaintext enables prefix scans for the UI and TTL enforcement without decrypting. An attacker with disk access sees conversation structure but not PII content.
 
 ### DD-5: Per-conversation TTL, 7-day default
-TTL is at the conversation level, not per-entry. Enforced via `created_at` in `__meta__`. Lazy enforcement: on access, check `now - created_at > ttl`; if expired, purge the entire conversation prefix. Configurable: `agent.vault.ttl: 168h`. Paths: `24h`, `168h` (default), `0` (infinite).
+TTL is at the conversation level, not per-entry. Enforced via `created_at` in `__meta__`. Multi-layered enforcement:
+1. **Startup sweep**: On agent start, iterate all `__meta__` keys, purge expired.
+2. **Background sweeper**: Goroutine with 4-hour ticker, iterates and purges expired conversations. INFO-level log with count purged (PII-free).
+3. **Access-time check**: On conversation access, check and purge individual scope.
+Configurable: `agent.vault.ttl: 168h`. Valid: `24h`, `168h` (default), `0` (infinite — WARNING logged at startup). Config comment notes: *"TTL enforcement via startup sweep + background sweeper (4h interval) + access-time check. If proxy is stopped before a sweep fires, data may briefly persist beyond configured TTL."*
 
 ### DD-6: Conversation-level metadata
 Each conversation gets a `__meta__` key with a JSON value containing:
@@ -158,7 +162,11 @@ Given a vault with a conversation scope (provider + UUID), when a PII token is p
 Given a vault at rest (process not running), when an attacker reads `vault.db` and `vault.key`, then the token values in bbolt are AES-256-GCM ciphertext. Metadata keys (provider, UUID, token type) are plaintext. `vault.key` has mode 0600 or stricter.
 
 ### AC-3: TTL enforcement
-Given a vault with `ttl: 24h` and a conversation created 25 hours ago, when the vault starts (or the conversation is accessed), then all entries for that conversation are purged. The `__meta__` record is deleted. No residual data.
+Given a vault with `ttl: 24h` and a conversation created 25 hours ago, then:
+- **Startup sweep** purges it on agent start.
+- **Background sweeper** purges it within 4 hours of expiry.
+- **Access-time check** purges it if the conversation is re-accessed after expiry.
+All entries and `__meta__` are deleted. No residual data. Sweeper logs `"vault sweep: purged N expired conversations"` at INFO level (PII-free).
 
 ### AC-4: Per-user isolation on Windows
 Given two Windows users (Alice and Bob) both using Qindu via the same service, when Alice browses ChatGPT and Bob browses Claude, then Alice's tokens are stored in `C:\Users\Alice\AppData\Local\Qindu\vault.db` and Bob's in `C:\Users\Bob\AppData\Local\Qindu\vault.db`. Each has their own `vault.key`. No cross-contamination.
