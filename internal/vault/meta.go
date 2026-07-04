@@ -2,19 +2,19 @@
 // using bbolt as the storage backend and AES-256-GCM for encryption.
 package vault
 
-import (
-	"encoding/json"
-	"time"
-)
+import "time"
 
 // Status represents the lifecycle state of a conversation.
 type Status string
 
 const (
-	StatusActive  Status = "active"
-	StatusExpired Status = "expired"
-	StatusPurged  Status = "purged"
+	StatusActive Status = "active"
 )
+
+// StatusExpired and StatusPurged were intentionally removed (PR-109):
+// the vault physically deletes expired/purged entries rather than
+// transitioning their status. Keeping unused enum values would be
+// dead code and risks schema confusion.
 
 // Metadata stores per-conversation metadata in plaintext JSON
 // under the __meta__ key. This enables efficient TTL enforcement
@@ -30,7 +30,12 @@ type Metadata struct {
 	Label          string   `json:"label"`           // User-assigned label (QINDU-0011)
 	PIICount       int      `json:"pii_count"`       // Total number of PII tokens
 	PIITypes       []string `json:"pii_types"`       // Deduplicated entity types
-	Status         Status   `json:"status"`          // active | expired | purged
+	// Status: Only StatusActive ("active") is used. Expired and purged
+	// entries are physically deleted from bbolt rather than having their
+	// status transitioned. The Status field is reserved for future
+	// UI-driven soft-delete workflows (QINDU-0016) where a user may
+	// want to see recently-purged conversations in a recycle bin.
+	Status Status `json:"status"` // active | expired | purged
 }
 
 // NewMetadata creates Metadata for a new conversation scope.
@@ -43,19 +48,4 @@ func NewMetadata(provider string) Metadata {
 		Status:    StatusActive,
 		PIITypes:  []string{},
 	}
-}
-
-// MarshalJSON serializes metadata to JSON bytes.
-func (m Metadata) MarshalJSON() ([]byte, error) {
-	type alias Metadata // avoid infinite recursion
-	return json.Marshal((*alias)(&m))
-}
-
-// UnmarshalMetadata parses JSON bytes into Metadata.
-func UnmarshalMetadata(data []byte) (Metadata, error) {
-	var m Metadata
-	if err := json.Unmarshal(data, &m); err != nil {
-		return Metadata{}, err
-	}
-	return m, nil
 }

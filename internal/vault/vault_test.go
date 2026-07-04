@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +45,7 @@ func setupTestVault(t *testing.T, ttl time.Duration) (*Vault, func()) {
 
 	// Ensure the tokens bucket exists.
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("tokens"))
+		_, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
 		return err
 	}); err != nil {
 		db.Close()
@@ -80,41 +82,46 @@ func TestPersistAndRetrieve(t *testing.T) {
 	token := "<<EMAIL_1>>"
 	piiValue := []byte("alice@example.com")
 
-	if err := vault.Persist(scope, token, piiValue); err != nil {
-		t.Fatalf("Persist: %v", err)
-	}
+	vault.Persist(scope, token, piiValue)
 
 	// Give the async writer time to flush.
 	time.Sleep(100 * time.Millisecond)
 
-	// Read directly from bbolt and verify the value is encrypted.
+	// AC-2: Verify the value is encrypted at rest by reading directly from bbolt.
+	// This is the only place in tests where direct bbolt access is justified —
+	// we need to confirm the raw bytes on disk do NOT contain plaintext PII.
 	var rawValue []byte
-	vault.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("tokens"))
+	if err := vault.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(BucketTokens))
 		if b == nil {
 			t.Fatal("bucket does not exist")
 		}
 		key := conversationKey(scope, token)
 		rawValue = b.Get([]byte(key))
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("bbolt View: %v", err)
+	}
 
 	if rawValue == nil {
 		t.Fatal("value not found in bbolt")
 	}
 
-	// Verify the raw value does NOT contain the PII plaintext.
+	// Verify the raw value does NOT contain the PII plaintext (AC-2).
 	if string(rawValue) == string(piiValue) {
 		t.Error("T-1 FAIL: PII value stored in plaintext in bbolt")
 	}
 
-	// Decrypt and verify.
-	decrypted, err := vault.crypto.Decrypt(rawValue)
+	// Use public API GetConversation for the round-trip verification.
+	entries, err := vault.GetConversation(context.Background(), scope)
 	if err != nil {
-		t.Fatalf("Decrypt: %v", err)
+		t.Fatalf("GetConversation: %v", err)
 	}
-	if string(decrypted) != string(piiValue) {
-		t.Errorf("T-1 FAIL: decrypted value mismatch: got %q, want %q", string(decrypted), string(piiValue))
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if string(entries[0].Value) != string(piiValue) {
+		t.Errorf("T-1 FAIL: decrypted value mismatch: got %q, want %q", string(entries[0].Value), string(piiValue))
 	}
 }
 
@@ -132,21 +139,17 @@ func TestAsyncNonBlocking(t *testing.T) {
 	// Channel buffer is 1024, send 2000 writes.
 	const burstSize = 2000
 	var wg sync.WaitGroup
-	errs := make(chan error, burstSize)
 
 	start := time.Now()
 	for i := 0; i < burstSize; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			tokenStr := "<<EMAIL_" + itoa(idx+1) + ">>"
-			if err := vault.Persist(scope, tokenStr, []byte("test@example.com")); err != nil {
-				errs <- err
-			}
+			tokenStr := "<<EMAIL_" + strconv.Itoa(idx+1) + ">>"
+			vault.Persist(scope, tokenStr, []byte("test@example.com"))
 		}(i)
 	}
 	wg.Wait()
-	close(errs)
 
 	elapsed := time.Since(start)
 
@@ -155,32 +158,10 @@ func TestAsyncNonBlocking(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Errorf("T-803 FAIL: 2000 Persist calls took %v, expected <5s (indicating blocking sends)", elapsed)
 	}
-
-	// Count channel sends that failed (they should have dropped gracefully).
-	droppedErrors := 0
-	for range errs {
-		droppedErrors++
-	}
-	if droppedErrors > 0 {
-		t.Logf("info: %d writes dropped due to full channel (expected under burst)", droppedErrors)
-	}
-}
-
-// itoa is a simple int-to-string helper (avoid importing strconv for a test helper).
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var digits []byte
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	return string(digits)
 }
 
 // =============================================================================
-// T-808: TestShutdownDrain — write N entries, close, verify no hang (SR-806)
+// T-808: TestShutdownDrain — write N entries, close, verify all writes committed
 // =============================================================================
 
 func TestShutdownDrain(t *testing.T) {
@@ -200,7 +181,7 @@ func TestShutdownDrain(t *testing.T) {
 	}
 
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte("tokens"))
+		_, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
 		return err
 	}); err != nil {
 		db.Close()
@@ -215,20 +196,54 @@ func TestShutdownDrain(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	// PR-104: Start background goroutines before writing.
+	vault.Run(context.Background())
+
 	scope := Scope{Provider: "claude", ConversationID: "test-conv-drain"}
 	const numWrites = 50
 
 	for i := 0; i < numWrites; i++ {
-		tokenStr := "<<EMAIL_" + itoa(i+1) + ">>"
-		if err := vault.Persist(scope, tokenStr, []byte("drain-test@example.com")); err != nil {
-			vault.Close()
-			t.Fatalf("Persist %d: %v", i, err)
-		}
+		tokenStr := "<<EMAIL_" + strconv.Itoa(i+1) + ">>"
+		vault.Persist(scope, tokenStr, []byte("drain-test@example.com"))
 	}
 
-	// Close the vault — should drain all pending writes without hanging.
+	// Close the vault — should drain all pending writes before returning.
 	vault.Close()
-	t.Logf("drain test: %d writes submitted before close, no panic/timeout", numWrites)
+	// Note: no cancel() needed — vault.Close() internally cancels the context
+	// derived from ctx, and goroutines already exited after wg.Wait().
+
+	// Reopen the DB for verification (vault.Close() closes it).
+	// AC-2: Direct bbolt access required to verify ciphertext at rest
+	// (i.e., to confirm all writes were committed to disk before Close() returned).
+	// The closed vault cannot serve GetConversation(), so we must read
+	// the DB directly for this specific drain-verification assertion.
+	db2, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("bolt.Open for verification: %v", err)
+	}
+	defer db2.Close()
+
+	var count int
+	db2.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(BucketTokens))
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		prefix := scopePrefix(scope)
+		for k, _ := c.Seek([]byte(prefix)); k != nil && strings.HasPrefix(string(k), prefix); k, _ = c.Next() {
+			keyStr := string(k)
+			if !strings.HasSuffix(keyStr, "/"+metaKeySuffix) {
+				count++
+			}
+		}
+		return nil
+	})
+
+	if count < numWrites {
+		t.Errorf("T-808 FAIL: expected at least %d token writes committed, got %d", numWrites, count)
+	}
+	t.Logf("drain test: %d writes submitted before close, %d committed", numWrites, count)
 }
 
 // =============================================================================
@@ -247,9 +262,9 @@ func TestConcurrentPersist(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			tokenStr := "<<EMAIL_" + itoa(idx) + ">>"
-			val := []byte("race-test-" + itoa(idx) + "@example.com")
-			_ = vault.Persist(scope, tokenStr, val)
+			tokenStr := "<<EMAIL_" + strconv.Itoa(idx) + ">>"
+			val := []byte("race-test-" + strconv.Itoa(idx) + "@example.com")
+			vault.Persist(scope, tokenStr, val)
 		}(i)
 	}
 	wg.Wait()
@@ -277,14 +292,10 @@ func TestTTLExpiry(t *testing.T) {
 	token := "<<EMAIL_1>>"
 	value := []byte("expire-test@example.com")
 
-	if err := vault.Persist(scope, token, value); err != nil {
-		t.Fatalf("Persist: %v", err)
-	}
+	vault.Persist(scope, token, value)
 
 	// Create metadata so PurgeExpired can scan __meta__ keys for conversation age.
-	if err := vault.UpdateMeta(scope, NewMetadata(scope.Provider)); err != nil {
-		t.Fatalf("UpdateMeta: %v", err)
-	}
+	vault.UpdateMeta(scope, NewMetadata(scope.Provider))
 
 	// Wait for async writes + TTL to expire.
 	time.Sleep(100 * time.Millisecond)
@@ -298,21 +309,13 @@ func TestTTLExpiry(t *testing.T) {
 		t.Error("expected at least 1 conversation purged with 1ms TTL")
 	}
 
-	// Verify the entry is gone from bbolt.
-	var exists bool
-	vault.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("tokens"))
-		if b == nil {
-			return nil
-		}
-		key := conversationKey(scope, token)
-		if b.Get([]byte(key)) != nil {
-			exists = true
-		}
-		return nil
-	})
-	if exists {
-		t.Error("T-4 FAIL: expired entry still exists in bbolt")
+	// Use public API to verify the conversation is gone (PR-003).
+	entries, err := vault.GetConversation(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if entries != nil {
+		t.Error("T-4 FAIL: expired conversation still exists (GetConversation returned entries)")
 	}
 }
 
@@ -325,9 +328,7 @@ func TestInfiniteTTLNeverPurges(t *testing.T) {
 	token := "<<EMAIL_1>>"
 	value := []byte("infinite@example.com")
 
-	if err := vault.Persist(scope, token, value); err != nil {
-		t.Fatalf("Persist: %v", err)
-	}
+	vault.Persist(scope, token, value)
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -364,7 +365,7 @@ func TestStartupSweep(t *testing.T) {
 	scope := Scope{Provider: "chatgpt", ConversationID: "test-startup-sweep"}
 
 	if err := db.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte("tokens"))
+		b, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
 		if err != nil {
 			return err
 		}
@@ -422,9 +423,7 @@ func TestPurgeAll(t *testing.T) {
 
 	// Write some data.
 	scope := Scope{Provider: "chatgpt", ConversationID: "test-purge-all"}
-	if err := vault.Persist(scope, "<<EMAIL_1>>", []byte("purge@example.com")); err != nil {
-		t.Fatalf("Persist: %v", err)
-	}
+	vault.Persist(scope, "<<EMAIL_1>>", []byte("purge@example.com"))
 	time.Sleep(100 * time.Millisecond)
 
 	// Purge all.
@@ -450,12 +449,8 @@ func TestDeleteConversation(t *testing.T) {
 	scope1 := Scope{Provider: "chatgpt", ConversationID: "conv-to-keep"}
 	scope2 := Scope{Provider: "claude", ConversationID: "conv-to-delete"}
 
-	if err := vault.Persist(scope1, "<<EMAIL_1>>", []byte("keep@example.com")); err != nil {
-		t.Fatalf("Persist scope1: %v", err)
-	}
-	if err := vault.Persist(scope2, "<<EMAIL_1>>", []byte("delete@example.com")); err != nil {
-		t.Fatalf("Persist scope2: %v", err)
-	}
+	vault.Persist(scope1, "<<EMAIL_1>>", []byte("keep@example.com"))
+	vault.Persist(scope2, "<<EMAIL_1>>", []byte("delete@example.com"))
 	time.Sleep(100 * time.Millisecond)
 
 	// Delete only scope2.
@@ -463,33 +458,23 @@ func TestDeleteConversation(t *testing.T) {
 		t.Fatalf("DeleteConversation: %v", err)
 	}
 
-	// Verify scope2 is gone.
-	var exists bool
-	vault.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("tokens"))
-		if b == nil {
-			return nil
-		}
-		if b.Get([]byte(conversationKey(scope2, "<<EMAIL_1>>"))) != nil {
-			exists = true
-		}
-		return nil
-	})
-	if exists {
-		t.Error("DeleteConversation: deleted conversation still exists")
+	// PR-003: Use public API to verify scope2 is gone.
+	entries, err := vault.GetConversation(context.Background(), scope2)
+	if err != nil {
+		t.Fatalf("GetConversation(scope2): %v", err)
+	}
+	if entries != nil {
+		t.Error("DeleteConversation: deleted conversation still exists (GetConversation returned entries)")
 	}
 
-	// Verify scope1 still exists.
-	vault.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("tokens"))
-		if b == nil {
-			return nil
-		}
-		if b.Get([]byte(conversationKey(scope1, "<<EMAIL_1>>"))) == nil {
-			t.Error("DeleteConversation: kept conversation was deleted")
-		}
-		return nil
-	})
+	// PR-003: Use public API to verify scope1 still exists.
+	entries, err = vault.GetConversation(context.Background(), scope1)
+	if err != nil {
+		t.Fatalf("GetConversation(scope1): %v", err)
+	}
+	if entries == nil || len(entries) == 0 {
+		t.Error("DeleteConversation: kept conversation disappeared (GetConversation returned nil/empty)")
+	}
 }
 
 // =============================================================================
@@ -603,8 +588,8 @@ func TestMetadataIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	restored, err := UnmarshalMetadata(data)
-	if err != nil {
+	var restored Metadata
+	if err := json.Unmarshal(data, &restored); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if restored.Provider != meta.Provider {
@@ -634,5 +619,290 @@ func TestScopePrefixFormat(t *testing.T) {
 	expected := "claude/def-456/"
 	if prefix != expected {
 		t.Errorf("expected prefix %q, got %q", expected, prefix)
+	}
+}
+
+// =============================================================================
+// PR-108: End-to-end restart round-trip test
+// =============================================================================
+
+// TestRestartRoundTrip verifies AC-1 across sessions:
+// New→persist→close→reopen→retrieve (PR-108).
+func TestRestartRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	keyPath := filepath.Join(dir, "vault.key")
+	dbPath := filepath.Join(dir, "vault.db")
+
+	// ── Session 1: Create, write, close ──
+	cryptoService1, err := crypto.New(keyPath)
+	if err != nil {
+		t.Fatalf("crypto.New: %v", err)
+	}
+
+	db1, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
+	if err != nil {
+		cryptoService1.Close()
+		t.Fatalf("bolt.Open: %v", err)
+	}
+	if err := db1.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(BucketTokens))
+		return err
+	}); err != nil {
+		db1.Close()
+		cryptoService1.Close()
+		t.Fatalf("create bucket: %v", err)
+	}
+
+	vault1, err := New(db1, cryptoService1, 1*time.Hour, testLogger())
+	if err != nil {
+		db1.Close()
+		cryptoService1.Close()
+		t.Fatalf("New: %v", err)
+	}
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	vault1.Run(ctx1)
+
+	scope := Scope{Provider: "chatgpt", ConversationID: "roundtrip-conv-001"}
+	expectedValues := map[string]string{
+		"<<EMAIL_1>>": "alice@example.com",
+		"<<PHONE_1>>": "+33123456789",
+		"<<IBAN_1>>":  "FR7612345678901234567890123",
+	}
+
+	for token, piiValue := range expectedValues {
+		vault1.Persist(scope, token, []byte(piiValue))
+	}
+
+	// Wait for writes to flush, then close session 1.
+	time.Sleep(200 * time.Millisecond)
+	vault1.Close()
+	// Close() already cancels context internally — no separate cancel1() needed.
+
+	// ── Session 2: Reopen and retrieve ──
+	cryptoService2, err := crypto.New(keyPath) // reopens existing key
+	if err != nil {
+		t.Fatalf("crypto.New (session 2): %v", err)
+	}
+	defer cryptoService2.Close()
+
+	db2, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
+	if err != nil {
+		t.Fatalf("bolt.Open (session 2): %v", err)
+	}
+	defer db2.Close()
+
+	vault2, err := New(db2, cryptoService2, 1*time.Hour, testLogger())
+	if err != nil {
+		t.Fatalf("New (session 2): %v", err)
+	}
+	defer vault2.Close()
+
+	// Retrieve entries via GetConversation (PR-002).
+	entries, err := vault2.GetConversation(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+
+	if len(entries) != len(expectedValues) {
+		t.Fatalf("PR-108 FAIL: expected %d entries, got %d", len(expectedValues), len(entries))
+	}
+
+	found := make(map[string]string)
+	for _, e := range entries {
+		found[e.Token] = string(e.Value)
+	}
+
+	for token, expectedValue := range expectedValues {
+		if found[token] != expectedValue {
+			t.Errorf("PR-108 FAIL: token %q = %q, expected %q", token, found[token], expectedValue)
+		}
+	}
+
+	// Also verify metadata was automatically created with correct counts.
+	convs, err := vault2.ListConversations(context.Background())
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("PR-108 FAIL: expected 1 active conversation after reopen, got %d", len(convs))
+	}
+	meta := convs[0]
+	if meta.PIICount != len(expectedValues) {
+		t.Errorf("PR-108 FAIL: metadata pii_count = %d, expected %d", meta.PIICount, len(expectedValues))
+	}
+	if len(meta.PIITypes) != 3 { // EMAIL, PHONE, IBAN
+		t.Errorf("PR-108 FAIL: metadata pii_types count = %d, expected 3", len(meta.PIITypes))
+	}
+}
+
+// =============================================================================
+// PR-001: Metadata integrity test (AC-13)
+// =============================================================================
+
+func TestMetadataAutoUpdate(t *testing.T) {
+	vault, cleanup := setupTestVault(t, 1*time.Hour)
+	defer cleanup()
+
+	scope := Scope{Provider: "chatgpt", ConversationID: "meta-auto-conv"}
+
+	// Persist tokens of different types.
+	vault.Persist(scope, "<<EMAIL_1>>", []byte("alice@example.com"))
+	vault.Persist(scope, "<<EMAIL_2>>", []byte("bob@example.com")) // same type, count++
+	vault.Persist(scope, "<<PHONE_1>>", []byte("+33123456789"))
+	vault.Persist(scope, "<<IBAN_1>>", []byte("FR7612345678901234567890123"))
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Retrieve metadata.
+	convs, err := vault.ListConversations(context.Background())
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+	meta := convs[0]
+
+	if meta.PIICount != 4 {
+		t.Errorf("PR-001 FAIL: pii_count = %d, expected 4", meta.PIICount)
+	}
+	if len(meta.PIITypes) != 3 { // EMAIL, PHONE, IBAN (deduplicated)
+		t.Errorf("PR-001 FAIL: pii_types count = %d, expected 3", len(meta.PIITypes))
+	}
+	if meta.UpdatedAt < meta.CreatedAt {
+		t.Error("PR-001 FAIL: updated_at should be >= created_at after writes")
+	}
+	if meta.Status != StatusActive {
+		t.Errorf("PR-001 FAIL: expected status active, got %q", meta.Status)
+	}
+}
+
+// =============================================================================
+// PR-002: GetConversation access-time TTL check (AC-3)
+// =============================================================================
+
+func TestGetConversationReturnsEntries(t *testing.T) {
+	vault, cleanup := setupTestVault(t, 1*time.Hour)
+	defer cleanup()
+
+	scope := Scope{Provider: "chatgpt", ConversationID: "get-conv-001"}
+	vault.Persist(scope, "<<EMAIL_1>>", []byte("alice@example.com"))
+	vault.Persist(scope, "<<PHONE_1>>", []byte("+33123456789"))
+
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err := vault.GetConversation(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("PR-002 FAIL: expected 2 entries, got %d", len(entries))
+	}
+
+	for _, e := range entries {
+		if e.Token == "" || len(e.Value) == 0 || e.Type == "" {
+			t.Errorf("PR-002 FAIL: incomplete entry: token=%q type=%q len(value)=%d",
+				e.Token, e.Type, len(e.Value))
+		}
+	}
+}
+
+func TestGetConversationAutoPurgeExpired(t *testing.T) {
+	vault, cleanup := setupTestVault(t, 1*time.Millisecond)
+	defer cleanup()
+
+	scope := Scope{Provider: "chatgpt", ConversationID: "get-conv-expired"}
+	vault.Persist(scope, "<<EMAIL_1>>", []byte("expire-me@example.com"))
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Access-time check: GetConversation should detect expiry and auto-purge.
+	entries, err := vault.GetConversation(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if entries != nil {
+		t.Errorf("PR-002 FAIL: expected nil entries for expired conversation, got %d", len(entries))
+	}
+
+	// Verify the conversation was actually deleted.
+	convs, err := vault.ListConversations(context.Background())
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 0 {
+		t.Errorf("PR-002 FAIL: expected 0 conversations after auto-purge, got %d", len(convs))
+	}
+}
+
+func TestGetConversationNotFound(t *testing.T) {
+	vault, cleanup := setupTestVault(t, 1*time.Hour)
+	defer cleanup()
+
+	scope := Scope{Provider: "chatgpt", ConversationID: "nonexistent"}
+	entries, err := vault.GetConversation(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if entries != nil {
+		t.Errorf("PR-002 FAIL: expected nil entries for nonexistent conversation")
+	}
+}
+
+// =============================================================================
+// Test provider validation (PR-106)
+// =============================================================================
+
+func TestProviderRejectsSlash(t *testing.T) {
+	vault, cleanup := setupTestVault(t, 1*time.Hour)
+	defer cleanup()
+
+	// Persist with a provider name containing "/" should be rejected.
+	scope := Scope{Provider: "azure/openai", ConversationID: "test-slash"}
+	vault.Persist(scope, "<<EMAIL_1>>", []byte("test@example.com"))
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify nothing was written.
+	convs, err := vault.ListConversations(context.Background())
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) > 0 {
+		t.Errorf("PR-106 FAIL: expected 0 conversations for rejected provider, got %d", len(convs))
+	}
+}
+
+// =============================================================================
+// Test extractPIIType
+// =============================================================================
+
+func TestExtractPIIType(t *testing.T) {
+	tests := []struct {
+		token    string
+		expected string
+		valid    bool
+	}{
+		{"<<EMAIL_1>>", "EMAIL", true},
+		{"<<PHONE_42>>", "PHONE", true},
+		{"<<CREDIT_CARD_3>>", "CREDIT_CARD", true},
+		{"<<IBAN_1>>", "IBAN", true},
+		{"", "", false},
+		{"not-a-token", "", false},
+		{"<<MISSING_CLOSE", "", false},
+		{"<INVALID_1>>", "", false},
+		{"<<NO_NUMBER>>", "", false},
+	}
+
+	for _, tc := range tests {
+		result, ok := extractPIIType(tc.token)
+		if ok != tc.valid {
+			t.Errorf("extractPIIType(%q): expected valid=%v, got valid=%v", tc.token, tc.valid, ok)
+		}
+		if ok && result != tc.expected {
+			t.Errorf("extractPIIType(%q): expected %q, got %q", tc.token, tc.expected, result)
+		}
 	}
 }
