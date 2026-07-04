@@ -3,6 +3,13 @@ agent:
   listen_port: 8787
   mode: "monitor"           # transparent | monitor | enforce
   fail_mode: "fail_open"    # fail_open | fail_closed
+  monitor:
+    scan_paths:
+      - "/conversation"       # ChatGPT (backend-anon, backend-api)
+      - "/v1/messages"        # Claude / Anthropic
+      - "/chat/completions"   # DeepSeek, OpenAI-compatible APIs
+      - "generateContent"      # Gemini (matches :generateContent or /generateContent)
+      - "/chat/"              # Copilot, various chat endpoints
 
 tls:
   ca_name: "Qindu AI Privacy CA"

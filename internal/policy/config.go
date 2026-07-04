@@ -17,12 +17,18 @@ type Config struct {
 	TLS       TLSConfig       `yaml:"tls"`
 }
 
+// MonitorConfig holds monitor-mode settings including path-based scan filtering.
+type MonitorConfig struct {
+	ScanPaths []string `yaml:"scan_paths"`
+}
+
 // AgentConfig holds agent-level settings.
 type AgentConfig struct {
-	ListenAddr string `yaml:"listen_addr"`
-	Mode       string `yaml:"mode"`
-	FailMode   string `yaml:"fail_mode"`
-	ListenPort int    `yaml:"listen_port"`
+	ListenAddr string        `yaml:"listen_addr"`
+	Mode       string        `yaml:"mode"`
+	FailMode   string        `yaml:"fail_mode"`
+	ListenPort int           `yaml:"listen_port"`
+	Monitor    MonitorConfig `yaml:"monitor"`
 }
 
 // TLSConfig holds TLS/CA settings.
@@ -86,6 +92,18 @@ func ParseConfig(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
+// defaultMonitorScanPaths returns the built-in scan path whitelist for monitor mode.
+// These cover major AI chat API endpoints.
+func defaultMonitorScanPaths() []string {
+	return []string{
+		"/conversation",     // ChatGPT (backend-anon, backend-api)
+		"/v1/messages",      // Claude / Anthropic
+		"/chat/completions", // DeepSeek, OpenAI-compatible APIs
+		"generateContent",   // Gemini (matches :generateContent or /generateContent)
+		"/chat/",            // Copilot, various chat endpoints
+	}
+}
+
 // Validate checks the config for security and correctness requirements.
 func (c *Config) Validate() error {
 	if c.Agent.ListenAddr == "" {
@@ -111,6 +129,16 @@ func (c *Config) Validate() error {
 		// Valid modes.
 	default:
 		return fmt.Errorf("agent.mode must be one of 'transparent', 'monitor', or 'enforce', got: %s", c.Agent.Mode)
+	}
+
+	// Validate monitor scan paths — use defaults if none configured.
+	if len(c.Agent.Monitor.ScanPaths) == 0 {
+		c.Agent.Monitor.ScanPaths = defaultMonitorScanPaths()
+	}
+	for i, p := range c.Agent.Monitor.ScanPaths {
+		if p == "" {
+			return fmt.Errorf("agent.monitor.scan_paths[%d] must be non-empty", i)
+		}
 	}
 
 	// Validate logging.output — must be one of stderr, file, both, or empty.
@@ -196,6 +224,9 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 	if override.Agent.FailMode != "" {
 		c.Agent.FailMode = override.Agent.FailMode
 	}
+	if len(override.Agent.Monitor.ScanPaths) > 0 {
+		c.Agent.Monitor.ScanPaths = override.Agent.Monitor.ScanPaths
+	}
 
 	// Merge TLS settings
 	if override.TLS.CAName != "" {
@@ -257,6 +288,9 @@ func DefaultConfig() *Config {
 			ListenPort: 8787,
 			Mode:       "monitor",
 			FailMode:   "fail_open",
+			Monitor: MonitorConfig{
+				ScanPaths: defaultMonitorScanPaths(),
+			},
 		},
 		TLS: TLSConfig{
 			CAName:             "Qindu AI Privacy CA",

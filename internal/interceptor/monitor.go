@@ -42,34 +42,72 @@ type MonitorInterceptor struct {
 	logger      *slog.Logger
 	maxInputLen int
 	piiLogging  bool
+	scanPaths   []string
 }
 
 // NewMonitorInterceptor creates a new MonitorInterceptor.
 //
 // Parameters:
 //   - engine: the PII detection engine (shared instance, concurrent-safe)
-//   - piiLogging: if false, all PII detection log entries are suppressed
+//   - piiLogging: controls whether entity_summary is included in logs; engine still runs
 //   - logger: structured JSON logger for detection log output
+//   - scanPaths: list of URL path substrings to scan (case-insensitive); paths not
+//     matching this whitelist are skipped entirely
 //
 // The engine's max input size is read directly from the engine instance,
 // eliminating the redundant parameter (PR-102).
-func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Logger) *MonitorInterceptor {
+func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Logger, scanPaths []string) *MonitorInterceptor {
+	if len(scanPaths) == 0 {
+		scanPaths = defaultScanPaths()
+	}
 	return &MonitorInterceptor{
 		engine:      engine,
 		logger:      logger,
 		maxInputLen: engine.MaxInputLen(),
 		piiLogging:  piiLogging,
+		scanPaths:   scanPaths,
 	}
+}
+
+// defaultScanPaths provides the built-in fallback if none configured.
+func defaultScanPaths() []string {
+	return []string{
+		"/conversation",
+		"/v1/messages",
+		"/chat/completions",
+		"generateContent", // Gemini (matches :generateContent or /generateContent)
+		"/chat/",
+	}
+}
+
+// shouldScanPath returns true if the given URL path matches any configured scan path
+// substring (case-insensitive).
+func (m *MonitorInterceptor) shouldScanPath(path string) bool {
+	lower := strings.ToLower(path)
+	for _, sp := range m.scanPaths {
+		if strings.Contains(lower, strings.ToLower(sp)) {
+			return true
+		}
+	}
+	return false
 }
 
 // InterceptRequest processes an HTTP request before forwarding to upstream.
 //
 // It reads the full request body, runs PII detection, emits a structured log
-// entry if entities are found (and pii_logging is enabled), and returns a new
-// body reader with the exact same bytes. If the body exceeds the engine limit,
-// detection is skipped and the original body is returned unchanged.
+// entry per message, and returns a new body reader with the exact same bytes.
+// If the URL path does not match any configured scan path, the body is forwarded
+// without scanning and no log entry is emitted.
+// If the body exceeds the engine limit, detection is skipped and the original
+// body is returned unchanged (no monitor_scan entry).
 func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request, io.ReadCloser, error) {
 	host := req.Host
+	reqPath := sanitizeLogPath(req.URL.Path)
+
+	// Path whitelist check: skip non-conversation endpoints entirely (no scan, no log).
+	if !m.shouldScanPath(reqPath) {
+		return req, req.Body, nil
+	}
 
 	// Defensive: handle nil body.
 	if req.Body == nil {
@@ -83,7 +121,7 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 			"direction", "request",
 			"host", host,
 			"method", req.Method,
-			"path", sanitizeLogPath(req.URL.Path),
+			"path", reqPath,
 			"content_length", req.ContentLength,
 			"bytes_limit", m.maxInputLen,
 		)
@@ -106,7 +144,7 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 			"direction", "request",
 			"host", host,
 			"method", req.Method,
-			"path", sanitizeLogPath(req.URL.Path),
+			"path", reqPath,
 			"bytes_limit", m.maxInputLen,
 		)
 		// req.Body has been partially consumed (maxInputLen+1 bytes).
@@ -122,28 +160,25 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 	// Body fits within limit — close original body since we consumed it all.
 	req.Body.Close()
 
-	// Run detection only when pii_logging is enabled (PR-103).
+	// Run detection — engine always runs when path matches (even when pii_logging=false,
+	// because we need the result for the monitor_scan entry).
 	var entities []pii.Entity
-	if m.piiLogging {
-		var detectErr error
-		entities, detectErr = m.detect(string(bodyBytes))
-		if detectErr != nil {
-			m.logger.Warn("pii_detection_skipped",
-				"reason", "engine_error",
-				"direction", "request",
-				"host", host,
-				"method", req.Method,
-				"path", sanitizeLogPath(req.URL.Path),
-				"error", detectErr.Error(),
-			)
-			return req, io.NopCloser(bytes.NewReader(bodyBytes)), nil
-		}
+	var detectErr error
+	entities, detectErr = m.detect(string(bodyBytes))
+	if detectErr != nil {
+		m.logger.Warn("pii_detection_skipped",
+			"reason", "engine_error",
+			"direction", "request",
+			"host", host,
+			"method", req.Method,
+			"path", reqPath,
+			"error", detectErr.Error(),
+		)
+		return req, io.NopCloser(bytes.NewReader(bodyBytes)), nil
 	}
 
-	if len(entities) > 0 {
-		m.logDetection(entities, host, "request", req.Method,
-			sanitizeLogPath(req.URL.Path), 0, "", len(bodyBytes), false)
-	}
+	// Always emit a monitor_scan entry per message (Bug 2 fix).
+	m.logMonitorScan(entities, host, "request", req.Method, reqPath, 0, "", len(bodyBytes))
 
 	return req, io.NopCloser(bytes.NewReader(bodyBytes)), nil
 }
@@ -151,7 +186,9 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 // InterceptResponse processes an HTTP response before forwarding to the browser.
 //
 // It inspects Content-Type to decide whether to analyze the body, handles SSE
-// streams via per-frame detection, and skips binary/non-text content types.
+// streams via per-frame detection with aggregated logging, and skips
+// binary/non-text content types. If the URL path does not match any configured
+// scan path, the body is forwarded without scanning and no log entry is emitted.
 // All traffic passes through unmodified.
 func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Response, io.ReadCloser, error) {
 	host := ""
@@ -163,6 +200,11 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 			path = sanitizeLogPath(resp.Request.URL.Path)
 		}
 		method = resp.Request.Method
+	}
+
+	// Path whitelist check: skip non-conversation endpoints entirely (no scan, no log).
+	if !m.shouldScanPath(path) {
+		return resp, resp.Body, nil
 	}
 
 	// Defensive: handle nil body.
@@ -191,7 +233,7 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 		return resp, resp.Body, nil
 
 	case ctSSE:
-		// Create SSE frame reader for per-frame detection.
+		// Create SSE frame reader for per-frame detection with aggregated logging.
 		// Use the decoupled SSE frame size limit, not the engine input limit (PR-101).
 		frameReader := newSSEFrameReader(SSEFrameReaderConfig{
 			Upstream:     resp.Body,
@@ -249,28 +291,25 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 		// Body fits — close original since we consumed it all.
 		resp.Body.Close()
 
-		// Run detection only when pii_logging is enabled (PR-103).
+		// Run detection — engine always runs when path matches.
 		var entities []pii.Entity
-		if m.piiLogging {
-			var detectErr error
-			entities, detectErr = m.detect(string(bodyBytes))
-			if detectErr != nil {
-				m.logger.Warn("pii_detection_skipped",
-					"reason", "engine_error",
-					"direction", "response",
-					"host", host,
-					"content_type", sanitizeContentTypeForLog(mediaType),
-					"error", detectErr.Error(),
-				)
-				return resp, io.NopCloser(bytes.NewReader(bodyBytes)), nil
-			}
+		var detectErr error
+		entities, detectErr = m.detect(string(bodyBytes))
+		if detectErr != nil {
+			m.logger.Warn("pii_detection_skipped",
+				"reason", "engine_error",
+				"direction", "response",
+				"host", host,
+				"content_type", sanitizeContentTypeForLog(mediaType),
+				"error", detectErr.Error(),
+			)
+			return resp, io.NopCloser(bytes.NewReader(bodyBytes)), nil
 		}
 
-		if len(entities) > 0 {
-			m.logDetection(entities, host, "response", method,
-				path, resp.StatusCode, sanitizeContentTypeForLog(mediaType),
-				len(bodyBytes), false)
-		}
+		// Always emit a monitor_scan entry per message (Bug 2 fix).
+		m.logMonitorScan(entities, host, "response", method,
+			path, resp.StatusCode, sanitizeContentTypeForLog(mediaType),
+			len(bodyBytes))
 
 		return resp, io.NopCloser(bytes.NewReader(bodyBytes)), nil
 
@@ -304,45 +343,46 @@ func (m *MonitorInterceptor) detect(text string) ([]pii.Entity, error) {
 	return entities, err
 }
 
-// logDetection emits a structured detection log entry if pii_logging is enabled.
-// All fields are PII-free per DPO-R1. When pii_logging is false, this is a no-op.
-func (m *MonitorInterceptor) logDetection(
+// logMonitorScan emits a single monitor_scan structured log entry per message.
+// Every scanned message produces exactly one entry with result "clean" or "pii_found".
+// This replaces the old per-detection pii_detected format (Bug 2 fix).
+//
+// When pii_logging is true: entity_count and entity_summary are included for pii_found.
+// When pii_logging is false: entity_count and entity_summary are omitted (privacy).
+// pii_values_logged is always false.
+func (m *MonitorInterceptor) logMonitorScan(
 	entities []pii.Entity,
 	host, direction, method, path string,
 	statusCode int, contentType string,
-	bytesAnalyzed int, sseFrame bool,
+	bytesAnalyzed int,
 ) {
-	if !m.piiLogging {
-		return
+	result := "clean"
+	var args []any
+
+	args = append(args,
+		"direction", direction,
+		"result", result,
+		"bytes_analyzed", bytesAnalyzed,
+		"pii_values_logged", false,
+	)
+
+	if len(entities) > 0 {
+		result = "pii_found"
+		// Update the result in the slice.
+		args[3] = result
+
+		args = append(args, "entity_count", len(entities))
+		if m.piiLogging {
+			// Include entity_summary when pii_logging is enabled.
+			entitySummary := buildEntitySummary(entities)
+			args = append(args, "entity_summary", entitySummary)
+		}
 	}
 
-	args := buildLogEntry(host, direction, method, path,
-		statusCode, contentType, entities, bytesAnalyzed, sseFrame)
-
-	m.logger.Info("pii_detected", args...)
-}
-
-// --- Shared log entry builders ---
-
-// buildLogEntry constructs the complete log argument slice for detection entries.
-// Used by both MonitorInterceptor.logDetection and SSEFrameReader.detectFrame
-// to eliminate duplicate metadata-building code (PR-106).
-//
-// Builds the full args slice: [host, direction, entity_count, entity_summary,
-// entities, bytes_analyzed, pii_values_logged, ...method, path, status_code,
-// content_type, sse_frame].
-func buildLogEntry(host, direction, method, path string, statusCode int,
-	contentType string, entities []pii.Entity, bytesAnalyzed int, sseFrame bool,
-) []any {
-	args := buildEntityLogArgs(entities, bytesAnalyzed, sseFrame)
-
-	// Prepend shared metadata.
-	args = append([]any{
-		"host", host,
-		"direction", direction,
-	}, args...)
-
-	// Add HTTP metadata fields when available.
+	// Add HTTP metadata.
+	if host != "" {
+		args = append(args, "host", host)
+	}
 	if method != "" {
 		args = append(args, "method", method)
 	}
@@ -356,41 +396,18 @@ func buildLogEntry(host, direction, method, path string, statusCode int,
 		args = append(args, "content_type", contentType)
 	}
 
-	return args
+	m.logger.Info("monitor_scan", args...)
 }
 
-// buildEntityLogArgs constructs the entity metadata portion of a detection log entry.
-// Used by buildLogEntry to avoid duplication (PR-005, PR-106).
-//
-// Returns a slice of key-value pairs suitable for slog: [entity_count, entity_summary,
-// entities, bytes_analyzed, pii_values_logged, ...sse_frame].
-func buildEntityLogArgs(entities []pii.Entity, bytesAnalyzed int, sseFrame bool) []any {
-	entitySummary := make(map[string]int)
-	entityList := make([]map[string]any, 0, len(entities))
-
+// buildEntitySummary creates a count map of entity types for log aggregation.
+// Used by both MonitorInterceptor.logMonitorScan and SSEFrameReader for the
+// aggregated monitor_scan entry.
+func buildEntitySummary(entities []pii.Entity) map[string]int {
+	summary := make(map[string]int)
 	for _, e := range entities {
-		entitySummary[string(e.Type)]++
-		entityList = append(entityList, map[string]any{
-			"type":       string(e.Type),
-			"source":     string(e.Source),
-			"confidence": e.Confidence,
-			"pos":        fmt.Sprintf("%d-%d", e.Start, e.End),
-		})
+		summary[string(e.Type)]++
 	}
-
-	args := []any{
-		"entity_count", len(entities),
-		"entity_summary", entitySummary,
-		"entities", entityList,
-		"bytes_analyzed", bytesAnalyzed,
-		"pii_values_logged", false,
-	}
-
-	if sseFrame {
-		args = append(args, "sse_frame", true)
-	}
-
-	return args
+	return summary
 }
 
 // --- Content-Type classification ---

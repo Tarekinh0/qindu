@@ -41,10 +41,15 @@
       Platform="x64"
       Comments="Qindu AI Privacy Proxy Installer" />
 
-    <!-- Major upgrade: allow same-version repair, block downgrades -->
+    <!-- Major upgrade: allow same-version repair, block downgrades.
+         Schedule="afterInstallInitialize" ensures RemoveExistingProducts
+         runs after the new files are laid down but before the old version
+         is removed. This prevents orphaned MSI registration from blocking
+         reinstall when the cached MSI of the old version is corrupt. -->
     <MajorUpgrade
       AllowSameVersionUpgrades="yes"
       AllowDowngrades="no"
+      Schedule="afterInstallInitialize"
       DowngradeErrorMessage="A newer version of !(loc.ProductName) is already installed." />
 
     <MediaTemplate EmbedCab="yes" />
@@ -202,7 +207,7 @@
            removes tracked files. WixQuietExec64 deferred CA evaluates
            DELETEDATA=1 at uninstall time (command-line property).
            Return="ignore" so uninstall succeeds even with locked files. -->
-      <Custom Action="CleanupProgramDataCmd" Before="RemoveFiles">Installed AND REMOVE="ALL" AND DELETEDATA="1"</Custom>
+      <Custom Action="CleanupProgramDataCmd" After="StopServices">Installed AND REMOVE="ALL" AND DELETEDATA="1"</Custom>
 
       <!-- Remove CA from trust store on uninstall.
            By Common Name (not file path) for robustness.

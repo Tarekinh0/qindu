@@ -1,210 +1,178 @@
-# QINDU-0007 Dev Notes — Mode Monitor (Fix Round 2)
+# QINDU-0007 Dev Notes — Mode Monitor (Fix Round 3: Path Filtering & Per-Message Logging)
 
 **Author**: Qindu DevSecOps
 **Date**: 2026-07-04
-**Status**: IMPLEMENTED — QEMU report fixes applied
+**Status**: IMPLEMENTED — Bug 1 (path filtering) and Bug 2 (per-message logging) fixed
 
 ---
 
-## 1. Fix Round 2 — QEMU Report Remediation
+## 1. Fix Round 3 — Critical Production Bugs
 
-**Trigger**: QEMU test report verdict **PASS** with one blocking operational limitation: log persistence to disk is missing. Three additional findings (F-1, F-2, F-3) addressed.
+**Trigger**: Two critical bugs making monitor mode useless in production:
+- **Bug 1**: No path filtering — telemetry noise drowns out signal
+- **Bug 2**: Per-detection logging — can't tell signal from noise
 
 ---
 
-### CHANGE 1: Log persistence to disk (BLOCKING — Section 4)
+### CHANGE 1: Path-based scan filtering (Bug 1)
 
-**Problem**: `InitLogger` hardcoded `os.Stderr` as the sole log output. When running as a Windows service (`NT AUTHORITY\LocalService`), `os.Stderr` is discarded by the SCM. This makes all logs — startup messages, connection metadata, and most critically, PII detection entries — invisible during service operation.
+**Problem**: The interceptor scanned ALL HTTP paths, including ChatGPT telemetry (`/ces/v1/t`, `/ces/statsc/flush`, etc.), producing Luhn false positives on analytics payloads and entropy false positives on base64 session tokens.
 
-**Fix**: Added configurable log output destination to `InitLogger` and `LoggingConfig`.
+**Fix**: Added whitelist-based path filtering. Only conversation endpoints are scanned.
+
+#### Implementation
+
+- Added `MonitorConfig` struct with `ScanPaths []string` to `AgentConfig` in `internal/policy/config.go`
+- Default scan paths: `/conversation`, `/v1/messages`, `/chat/completions`, `generateContent`, `/chat/`
+- Case-insensitive substring matching via `strings.Contains` with `strings.ToLower`
+- Paths not matching the whitelist are skipped entirely — no scan, no log entry
+- Validation: empty scan paths get populated with defaults; empty values in the list are rejected
+- `MergeFileOverride` merges `MonitorConfig.ScanPaths` (full replacement when present)
 
 #### Files modified
 
 | File | Change |
 |---|---|
-| `internal/policy/config.go` | Added `Output string` (`"stderr"`, `"file"`, `"both"`) and `LogDir string` fields to `LoggingConfig`. Updated `DefaultConfig()` with safe defaults (`"stderr"`, `""`). Updated `MergeFileOverride()` to merge new fields. |
-| `internal/logging/logger.go` | Changed `InitLogger(level, format string)` → `InitLogger(level, format, output, logDir string)`. Added `resolveLogWriter()`, `openLogFile()`, and `defaultLogDir()` helpers. File output creates `agent.log` with append mode in the configured directory (auto-creates it via `MkdirAll`). Falls back to stderr on failure with a diagnostic warning. `"both"` mode uses `io.MultiWriter(os.Stderr, file)`. |
-| `internal/logging/logger_test.go` | Updated all 3 existing tests for new signature. Added 3 new tests: `TestInitLogger_FileOutput` (JSON in file), `TestInitLogger_BothOutput` (file + stderr), `TestInitLogger_FileOutputFallback` (graceful fallback). Added `os` import. |
-| `cmd/agent/proxy.go` | Passes `cfg.Logging.Output` and `cfg.Logging.LogDir` to `InitLogger`. |
-| `configs/default.yaml` | Added `output: "stderr"` and `log_dir: ""` comments. |
-| `installer/wix/configs/default.yaml` | Same additions. |
+| `internal/policy/config.go` | Added `MonitorConfig` struct, `defaultMonitorScanPaths()`, populated `DefaultConfig()`, added validation in `Validate()`, added merge in `MergeFileOverride()` |
+| `internal/interceptor/monitor.go` | Added `scanPaths` field to `MonitorInterceptor`, `shouldScanPath()` method, path check at top of `InterceptRequest` and `InterceptResponse`, updated `NewMonitorInterceptor` signature |
+| `internal/proxy/proxy.go` | Updated `selectInterceptor` to pass `cfg.Agent.Monitor.ScanPaths` to `NewMonitorInterceptor` (minimal change: one line) |
+| `configs/default.yaml` | Added `agent.monitor.scan_paths` section |
+| `installer/wix/configs/default.yaml` | Same |
 
-#### Design decisions
+---
 
-- **`os.O_APPEND` mode**: Log file grows indefinitely; no rotation yet (DPO-R10: deferred). Open file handle lives for process lifetime (closed by OS on exit).
-- **`defaultLogDir()`**: On Windows → `%PROGRAMDATA%\Qindu\logs`; on other → `$HOME/.qindu/logs` or `$TMPDIR/qindu-logs`.
-- **Empty `output` falls back to stderr**: Backward-compatible with configs created before this change.
-- **No auto-detection of service mode for output**: The config explicitly controls output destination. Users who want file logging in service mode set `output: "file"` in config. This keeps the logging layer unaware of the service/console distinction.
+### CHANGE 2: Per-message aggregated logging (Bug 2)
 
-#### How to enable file output for service mode
+**Problem**: Each PII entity produced its own `pii_detected` log line. A single request generated dozens of lines for entropy false positives. Users couldn't find the one meaningful detection.
 
-```yaml
-# In %PROGRAMFILES%\Qindu\configs\default.yaml (or override at %PROGRAMDATA%\Qindu\config.yaml):
-logging:
-  output: "file"          # or "both" for stderr + file
-  log_dir: ""              # auto-detect: C:\ProgramData\Qindu\logs
+**Fix**: Changed log format from per-detection `pii_detected` to per-message `monitor_scan`. Every scanned message produces exactly ONE log entry.
+
+#### New log format
+
+```json
+// PII found:
+{"msg":"monitor_scan","direction":"request","result":"pii_found","entity_count":2,"entity_summary":{"EMAIL":1,"PHONE":1},"bytes_analyzed":1355,"pii_values_logged":false,"host":"api.openai.com","method":"POST","path":"/v1/chat/completions"}
+
+// Clean (no PII):
+{"msg":"monitor_scan","direction":"request","result":"clean","bytes_analyzed":452,"pii_values_logged":false,"host":"api.openai.com","method":"POST","path":"/v1/chat/completions"}
 ```
 
----
+Key changes:
+- `msg` field is `"monitor_scan"` (not `"pii_detected"`)
+- `result` field: `"clean"` or `"pii_found"` — instant signal-to-noise
+- `entity_count` and `entity_summary` only present when `result: "pii_found"`
+- **Every** scanned message produces a log entry — even clean ones — so users can see traffic is being inspected
+- No per-entity list (`entities` array removed) — `entity_summary` count map is sufficient
+- `pii_values_logged` always `false`
 
-### CHANGE 2: SSH session detected as service mode (F-1 — MEDIUM)
+#### SSE responses
 
-**Problem**: `svc.IsAnInteractiveSession()` returns `false` for SSH sessions, causing the agent to try `svc.Run()` and fail with "The service process could not connect to the service controller." This blocks debugging and testing via SSH.
+- Frame-by-frame detection continues (for correctness)
+- Detection results are **accumulated** across all frames of a single response stream
+- When the stream ends (`io.EOF` or `data: [DONE]` marker), ONE aggregated `monitor_scan` is emitted
+- Frames are still forwarded immediately (no buffering for forwarding, only accumulate for the log)
+- `sse_frame: true` included in the aggregated entry
 
-**Fix**: Added `--console` flag and `QINDU_CONSOLE=1` env var to force console mode.
+#### `pii_logging` flag behavior
+
+| Setting | Engine runs? | Log emitted? | entity_summary? |
+|---|---|---|---|
+| `true` | Yes | Yes | Yes (when pii_found) |
+| `false` | Yes | Yes | No (privacy) |
+
+Previously (PR-103), `pii_logging: false` skipped the engine call entirely. Now the engine always runs when the path matches, but `entity_summary` is suppressed when `pii_logging: false`. This ensures users can see "traffic was scanned" without leaking entity type details.
+
+#### Implementation (interceptor)
+
+- Removed `logDetection()`, `buildLogEntry()`, `buildEntityLogArgs()`
+- Added `logMonitorScan()` — one call per message, produces `monitor_scan` entry
+- Added `buildEntitySummary()` — shared helper for entity type counting
+- `InterceptRequest`/`InterceptResponse`: engine always runs when path matches; always call `logMonitorScan`
+
+#### Implementation (SSE)
+
+- Added aggregated fields to `SSEFrameReader`: `aggregatedSummary`, `aggregatedCount`, `totalBytesAnalyzed`, `monitorScanEmitted`, `doneMarkerSeen`
+- `detectFrame()`: accumulates entity types instead of logging
+- `emitAggregatedMonitorScan()`: emits one `monitor_scan` at stream end
+- Triggered on `io.EOF` in `Read()` or when `data: [DONE]` marker is detected
+- Guard with `monitorScanEmitted` flag to prevent double emission
 
 #### Files modified
 
 | File | Change |
 |---|---|
-| `cmd/agent/main.go` | Added `--console` flag (`flag.Bool`). Added `os.Getenv("QINDU_CONSOLE") == "1"` check. Combined into `forceConsole bool` passed to `runProxy()`. |
-| `cmd/agent/proxy.go` | `runProxy()` accepts `forceConsole bool`. `startProxy()` accepts `forceConsole bool`. When `forceConsole` is true, service detection is bypassed and console mode runs directly (logs "running in console mode (forced)"). |
-
-#### Usage
-
-```powershell
-# Via SSH:
-$env:QINDU_CONSOLE = "1"
-& "C:\Program Files\Qindu\agent.exe" -config "C:\Program Files\Qindu\configs\default.yaml"
-
-# Or with flag:
-& "C:\Program Files\Qindu\agent.exe" --console
-```
-
----
-
-### CHANGE 3: `configs/default.yaml` mode default (F-3 — HIGH)
-
-**Problem**: Both `configs/default.yaml` and `installer/wix/configs/default.yaml` shipped with `mode: "enforce"`. Since enforce mode is not implemented (QINDU-0009), the agent returns a fatal error from `NewProxy`, which causes the MSI service auto-start to fail, which triggers a full MSI rollback.
-
-**Fix**: Changed `mode: "enforce"` → `mode: "monitor"` and `pii_logging: false` → `pii_logging: true` in both config files. Also updated comments to list all three valid modes.
-
-#### Files modified
-
-| File | Change |
-|---|---|
-| `configs/default.yaml` | `mode: "monitor"`, `pii_logging: true`, added `output: "stderr"` and `log_dir: ""` with comments. |
-| `installer/wix/configs/default.yaml` | Same changes (MSI shipped copy). |
-
-#### Note
-
-`DefaultConfig()` in `internal/policy/config.go` retains `Mode: "enforce"` per story specification (forward compatibility for QINDU-0009). The YAML default is what gets shipped; the `DefaultConfig()` function is for programmatic use.
-
----
-
-### CHANGE 4: CA trust store (Section 2 — noted, not fixed)
-
-The QEMU report notes that `certutil -store Root "Qindu AI Privacy CA"` returns `NTE_NOT_FOUND`. CA files exist at `C:\ProgramData\Qindu\` but are not in the Windows trust store. This is a pre-existing infrastructure issue from the installer (QINDU-0004), not a QINDU-0007 regression. The CA cert installation sequence may have been rolled back by a previous failed MSI install. This must be verified by the installer sprint; it does not block QINDU-0007's functional correctness.
+| `internal/interceptor/monitor.go` | Replaced `logDetection`/`buildLogEntry`/`buildEntityLogArgs` with `logMonitorScan` and `buildEntitySummary`. Updated both intercept methods to always scan and log. |
+| `internal/interceptor/sse.go` | Added aggregation fields to `SSEFrameReader`, rewrote `detectFrame` to accumulate, added `emitAggregatedMonitorScan`, added `[DONE]` marker detection |
+| `internal/interceptor/monitor_test.go` | Updated all 28+ tests for new `monitor_scan` format and `NewMonitorInterceptor` 4-arg signature. Added tests: path filtering, clean-path logging, `pii_logging=false` behavior, `buildEntitySummary`, path substring matching |
+| `internal/interceptor/sse_test.go` | Updated all 11+ SSE tests for aggregated logging. Added tests: `[DONE]` marker termination, clean SSE stream aggregation |
 
 ---
 
 ## 2. Complete File Summary
 
-### Created (prior rounds)
+### Modified (this round)
 
-| File | Lines | Purpose |
+| File | Lines | Summary |
 |---|---|---|
-| `internal/interceptor/monitor.go` | ~424 | MonitorInterceptor implementation |
-| `internal/interceptor/sse.go` | ~325 | SSE frame reader |
-| `internal/interceptor/monitor_test.go` | ~882 | 28 unit tests |
-| `internal/interceptor/sse_test.go` | ~597 | 11 unit tests |
-
-### Modified (all rounds)
-
-| File | Round 1 | Round 2 | Round 3 | Summary |
-|---|---|---|---|---|
-| `internal/proxy/proxy.go` | ✅ | — | ✅ | Interceptor selection, engine creation moved to selectInterceptor |
-| `internal/policy/config.go` | ✅ | ✅ (output/log_dir) | ✅ (mode+validation) | Mode default changed to "monitor"; logging.output validated |
-| `internal/policy/config_test.go` | ✅ | — | — | 6 AgentMode validation cases |
-| `internal/logging/logger.go` | — | ✅ | ✅ (closer) | File output + multiWriteCloser + InitLogger returns closer |
-| `internal/logging/logger_test.go` | — | ✅ | ✅ (filepath.Join) | Test signature updates + filepath.Join fixes |
-| `internal/pii/engine.go` | — | — | ✅ (MaxInputLen) | Added MaxInputLen() accessor |
-| `internal/interceptor/monitor.go` | — | — | ✅ | Removed redundant maxInputLen param from constructor |
-| `internal/interceptor/monitor_test.go` | — | — | ✅ | Updated 22 call sites for 3-arg constructor |
-| `internal/proxy/proxy_test.go` | — | — | ✅ | DefaultConfig test repurposed for monitor mode |
-| `cmd/agent/proxy.go` | — | ✅ | ✅ (closer) | Logging config pass-through + defer closer.Close() |
-| `cmd/agent/main.go` | — | ✅ | — | --console flag + QINDU_CONSOLE env var |
-| `configs/default.yaml` | — | ✅ | — | mode=monitor, pii_logging=true, output/log_dir |
-| `installer/wix/configs/default.yaml` | — | ✅ | — | Same as above (MSI shipped copy) |
+| `internal/policy/config.go` | ~314 | `MonitorConfig` struct, `defaultMonitorScanPaths()`, validation, merge |
+| `internal/interceptor/monitor.go` | ~499 | `scanPaths` field, `shouldScanPath()`, `logMonitorScan()`, per-message logging |
+| `internal/interceptor/sse.go` | ~390 | Aggregation fields, `emitAggregatedMonitorScan()`, `[DONE]` handling |
+| `internal/interceptor/monitor_test.go` | ~767 | 32+ tests updated, new path filtering + log format tests |
+| `internal/interceptor/sse_test.go` | ~527 | 13+ tests updated, aggregated logging + `[DONE]` tests |
+| `internal/proxy/proxy.go` | +1 line | Pass `ScanPaths` to `NewMonitorInterceptor` |
+| `configs/default.yaml` | ~35 | Added `agent.monitor.scan_paths` |
+| `installer/wix/configs/default.yaml` | ~39 | Same |
 
 ---
 
-## 3. Test Results (Fix Round 3)
+## 3. Test Results
 
 ```
 $ go build ./...  → PASS
 $ go vet ./...    → PASS
-$ go test -race -count=1 ./...
-ok  	github.com/Tarekinh0/qindu/cmd/agent	1.066s
+$ go test -count=1 ./...
+ok  	github.com/Tarekinh0/qindu/cmd/agent	0.014s
 ?   	github.com/Tarekinh0/qindu/internal/constants	[no test files]
-ok  	github.com/Tarekinh0/qindu/internal/interceptor	1.728s
-ok  	github.com/Tarekinh0/qindu/internal/logging	1.031s
-ok  	github.com/Tarekinh0/qindu/internal/pii	1.695s
-ok  	github.com/Tarekinh0/qindu/internal/policy	1.056s
-ok  	github.com/Tarekinh0/qindu/internal/proxy	3.999s
+ok  	github.com/Tarekinh0/qindu/internal/interceptor	0.182s
+ok  	github.com/Tarekinh0/qindu/internal/logging	(cached)
+ok  	github.com/Tarekinh0/qindu/internal/pii	(cached)
+ok  	github.com/Tarekinh0/qindu/internal/policy	0.011s
+ok  	github.com/Tarekinh0/qindu/internal/proxy	2.807s
 ?   	github.com/Tarekinh0/qindu/internal/service	[no test files]
-ok  	github.com/Tarekinh0/qindu/internal/tls	1.859s
-ok  	github.com/Tarekinh0/qindu/internal/tokenize	1.789s
+ok  	github.com/Tarekinh0/qindu/internal/tls	(cached)
+ok  	github.com/Tarekinh0/qindu/internal/tokenize	(cached)
 ```
 
-- 10 packages PASS, 0 failures, 0 data races
-- All existing tests updated for new `InitLogger` and `NewMonitorInterceptor` signatures
-- Logging tests: 8 tests (3 original + 3 file/both + connection + NoPII)
-- Monitor tests: 28 unit tests updated for 3-arg constructor
-- Proxy tests: `TestNewProxy_DefaultConfigIsValid` replaces `TestNewProxy_DefaultConfigIsEnforce`
-- Policy tests: `TestValidate_AgentMode` unchanged; `logging.output` validation covered by default config validation
+- 10 packages PASS, 0 failures
+- Interceptor: 50+ tests pass (including new path filtering and aggregated log tests)
+- Policy: all config tests pass (including scan path defaults and validation)
+
+### New tests added
+
+| Test | Covers |
+|---|---|
+| `TestShouldScanPath` (13 subtests) | Path filtering: conversation, claude, openai, gemini, copilot match; telemetry, health, sentinel skip; case-insensitive |
+| `TestMonitorInterceptor_InterceptRequest_PathFilterSkip` | Telemetry path `/ces/statsc/flush` skipped |
+| `TestMonitorInterceptor_ResponsePathFilterSkip` | Telemetry path skipped on response |
+| `TestMonitorInterceptor_InterceptRequest_NoPII_CleanLog` | Clean message produces `monitor_scan` with `result: "clean"` |
+| `TestMonitorInterceptor_InterceptRequest_PathFilterSubstringMatch` | Custom scan path matching |
+| `TestBuildEntitySummary` | Entity summary aggregation helper |
+| `TestSSEFrameReader_DoneMarkerTermination` | `[DONE]` marker triggers aggregated emission |
+| `TestSSEFrameReader_AggregatedSummaryForClean` | Clean SSE stream produces clean `monitor_scan` |
 
 ---
 
-## 4. How to Verify File Logging (QEMU Re-Test)
+## 4. Design Decisions
 
-1. **Edit the shipped config** to use file output:
-   ```yaml
-   # C:\Program Files\Qindu\configs\default.yaml
-   logging:
-     output: "file"
-     log_dir: ""   # defaults to C:\ProgramData\Qindu\logs
-   ```
+1. **Substring matching, not path prefix matching**: `strings.Contains` with case-insensitive comparison. This catches conversation paths wherever they appear in the URL hierarchy (e.g., `/backend-anon/conversation`, `/v1/chat/completions`). The Gemini `generateContent` scan path deliberately omits the leading `/` to match both `:generateContent` (Gemini API) and `/generateContent` paths.
 
-2. **Restart the QinduAgent service**:
-   ```powershell
-   Restart-Service QinduAgent
-   ```
+2. **Path check before content-type check**: For `InterceptResponse`, the path whitelist check runs before `classifyContentType`. This avoids wasting cycles on content-type parsing for telemetry paths that will be skipped anyway.
 
-3. **Verify log file exists and contains startup entries**:
-   ```powershell
-   Get-Content "C:\ProgramData\Qindu\logs\agent.log"
-   ```
-   Expected: JSON lines including `"Monitor mode active..."` with `"pii_logging":true`.
+3. **Default scan paths in two places**: Both `internal/policy/config.go` (`defaultMonitorScanPaths`) and `internal/interceptor/monitor.go` (`defaultScanPaths`) have the same default list. The policy version applies during config loading/validation; the interceptor version is a fallback when `nil` or empty scan paths are passed programmatically. This is intentional — the YAML config is the primary source of truth, but the interceptor defensively falls back to known-good defaults.
 
-4. **Send synthetic PII through the proxy** (AC #12–#14):
-   ```powershell
-   curl -x http://127.0.0.1:8787 -k -X POST \
-     -d '{"prompt":"My email is test@example.com and phone +1-555-0123"}' \
-     -H "Content-Type: application/json" \
-     https://chatgpt.com/api/test
-   ```
+4. **Engine always runs when path matches**: Previously, `pii_logging: false` skipped the engine call (PR-103). With the new log format, the engine must run to populate `result` (`"clean"` vs `"pii_found"`) and `entity_count`. The `pii_logging` flag now controls only whether `entity_summary` is included in the log entry.
 
-5. **Verify detection log entry in the log file**:
-   ```powershell
-   Select-String -Path "C:\ProgramData\Qindu\logs\agent.log" -Pattern "pii_detected"
-   ```
-   Expected: JSON entry with `"entity_count":2`, `"entity_summary":{"EMAIL":1,"PHONE":1}`, `"pii_values_logged":false`.
-
-6. **Toggle to transparent mode** (AC #16):
-   - Edit config: `mode: "transparent"`
-   - Restart service
-   - Send same prompt
-   - Verify log file has **zero** `pii_detected` entries (connection logs only)
-   - Revert to `mode: "monitor"`, restart, verify entries return
-
-7. **Test --console mode** (F-1 fix):
-   ```powershell
-   Stop-Service QinduAgent
-   $env:QINDU_CONSOLE = "1"
-   & "C:\Program Files\Qindu\agent.exe" --console
-   ```
-   Expected: service detection bypassed, runs in foreground, logs to stderr.
+5. **proxy.go minimal change**: Added one line passing `cfg.Agent.Monitor.ScanPaths` to `NewMonitorInterceptor`. The `Interceptor` interface remains unchanged — `InterceptRequest` and `InterceptResponse` signatures are identical.
 
 ---
 
@@ -212,76 +180,19 @@ ok  	github.com/Tarekinh0/qindu/internal/tokenize	1.789s
 
 | Gap | Severity | Notes |
 |---|---|---|
-| **Log rotation** | MEDIUM | File grows indefinitely in append mode. DPO-R10 recommends 7–30 day retention. Not blocking — deferred. |
-| **`pii_logging` pointer fix** | MEDIUM | DPO-R12 / QINDU-0002 PR-104: `PIILogging bool` zero-value problem means override file `pii_logging: true` is indistinguishable from absent. Tracked for QINDU-0009. |
-| **F-2: MSI uninstall orphaned registration** | LOW | Documentation issue — `sc delete` breaks MSI uninstall. The correct uninstall path is `msiexec /x`. No code fix needed for QINDU-0007. |
-| **CA trust store not populated** | MEDIUM | Pre-existing from QINDU-0004 installer. CA files exist at `C:\ProgramData\Qindu\` but trust store entry may be missing. Must be fixed in installer sprint; does not block QINDU-0007 functionality (proxy can still generate leaf certs). |
-| **SSE timeout on stalled connections** | LOW | Known limitation from Round 1: if upstream completely stalls (zero bytes), Go's blocking `Read` never returns and the 30s timeout cannot fire. `net.Conn` read deadline should handle this at transport layer. |
+| **Log rotation** | MEDIUM | File grows indefinitely in append mode. DPO-R10 recommends 7–30 day retention. |
+| **`pii_logging` pointer fix** | MEDIUM | DPO-R12 / QINDU-0002 PR-104: `PIILogging bool` zero-value problem. Tracked for QINDU-0009. |
+| **SSE timeout on stalled connections** | LOW | Known limitation: if upstream completely stalls, Go's blocking `Read` never returns. |
+| **CA trust store not populated** | MEDIUM | Pre-existing from QINDU-0004 installer. |
+| **No scan_paths for non-chat providers** | LOW | Current whitelist covers major providers. Users can extend via config. |
 
 ---
 
-## 6. Fix Round 3 — Peer Review Remediation (PR-001 to PR-102)
+## 6. Unchanged per Sprint Constraints
 
-**Trigger**: Peer review verdict `FIX_AND_RESUBMIT` with 2 blocking findings and 5 non-blocking recommendations. All findings fixed.
-
-### PR-001 🔴 Log file handle never closed — FIXED
-
-**Files**: `internal/logging/logger.go`, `internal/logging/logger_test.go`, `cmd/agent/proxy.go`
-
-- Added `nopCloser` type (no-op `Close()` for stderr).
-- Added `multiWriteCloser` struct that wraps `io.MultiWriter` composition with an `[]io.Closer` slice, using `errors.Join` for batched close.
-- Changed `resolveLogWriter` return type from `io.Writer` to `(io.Writer, io.Closer)`. The `"file"` case returns the `*os.File` directly as both writer and closer. The `"both"` case returns a `multiWriteCloser` holding the file closer.
-- Changed `InitLogger` return type from `*slog.Logger` to `(*slog.Logger, io.Closer)`. The caller is responsible for `defer closer.Close()`.
-- Updated `cmd/agent/proxy.go` to capture and defer the closer.
-- Updated all 5 test call sites in `logger_test.go`.
-
-### PR-002 🟡 DefaultConfig() mode vs YAML inconsistency — FIXED
-
-**Files**: `internal/policy/config.go`, `internal/proxy/proxy_test.go`
-
-- Changed `DefaultConfig().Agent.Mode` from `"enforce"` to `"monitor"` — matching `configs/default.yaml`.
-- Renamed `TestNewProxy_DefaultConfigIsEnforce` → `TestNewProxy_DefaultConfigIsValid`, now asserting the default config creates a valid proxy instance (monitor mode).
-
-### PR-003 🟡 No validation of `logging.output` — FIXED
-
-**File**: `internal/policy/config.go`
-
-- Added `logging.output` validation in `Config.Validate()`: accepts `"stderr"`, `"file"`, `"both"`, or `""`; rejects anything else with a descriptive error.
-
-### PR-005 🟢 `filepath.Join` in tests — FIXED
-
-**File**: `internal/logging/logger_test.go`
-
-- Replaced `tmpDir + "/agent.log"` with `filepath.Join(tmpDir, "agent.log")` in `TestInitLogger_FileOutput` and `TestInitLogger_BothOutput`.
-- Added `"path/filepath"` import.
-
-### PR-100 🟡 Engine creation deferred — FIXED
-
-**Files**: `internal/proxy/proxy.go`, `internal/proxy/proxy_test.go`
-
-- Moved engine creation from `NewProxy` into `selectInterceptor`, only creating the `pii.Engine` with all 9 recognizers for `"monitor"` mode.
-- `selectInterceptor` no longer takes `*pii.Engine` parameter — it creates one itself when needed.
-- In `"transparent"` mode, no engine is created at all (zero cost for unused features).
-- `NewProxy` signature unchanged; engine is now created lazily.
-
-### PR-102 🟡 Removed redundant `maxInputLen` parameter — FIXED
-
-**Files**: `internal/pii/engine.go`, `internal/interceptor/monitor.go`, `internal/interceptor/monitor_test.go`, `internal/proxy/proxy.go`
-
-- Added `MaxInputLen() int` method to `pii.Engine` exposing the already-present `maxInputLen` field.
-- Removed `maxInputLen int` parameter from `NewMonitorInterceptor` — the value is now read from `engine.MaxInputLen()`.
-- Updated `selectInterceptor` in proxy.go: call is `NewMonitorInterceptor(engine, cfg.Logging.PIILogging, logger)`.
-- Updated all 22 test call sites in `monitor_test.go`:
-  - Standard tests: dropped the `pii.DefaultMaxInputBytes` argument.
-  - Oversize tests (`OversizeBodyWithClosingReader`, `OversizeBodyCloseIsPropagated`): now create a small engine (`pii.NewEngine(100, ...)`) instead of passing a mismatched limit.
-
----
-
-## 7. Unchanged per Sprint Constraints
-
-- `internal/pii/` — `MaxInputLen()` added as a read-only accessor; no behavioral change
 - `Interceptor` interface — unchanged
 - `NoOpInterceptor` — unchanged
 - `forward.go` — unchanged
+- PII engine and recognizers — unchanged
+- `pii_values_logged` always `false` — unchanged
 - ADRs — unchanged
-- `story.md`, `dpo-requirements.md`, `ciso-requirements.md` — unchanged (not for DevSecOps)

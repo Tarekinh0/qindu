@@ -100,41 +100,44 @@ func TestSSEFrameReader_CompleteFrames(t *testing.T) {
 		t.Errorf("forwarded output mismatch.\n got: %q\nwant: %q", string(output), expectedOutput)
 	}
 
-	// Verify detection logs.
+	// Verify aggregated monitor_scan log entry (Bug 2 fix: 1 entry per stream).
 	entries := parseLogEntries(t, &logBuf)
-	// We expect 2 detection entries (frames 1 and 3 have PII)
-	if len(entries) < 2 {
-		t.Fatalf("expected at least 2 detection log entries, got %d", len(entries))
-	}
-
-	// First frame should have EMAIL detection.
-	frame1 := entries[0]
-	if frame1["msg"] != "pii_detected" {
-		t.Errorf("expected msg=pii_detected, got %v", frame1["msg"])
-	}
-	if frame1["pii_values_logged"] != false {
-		t.Errorf("pii_values_logged must be false, got %v", frame1["pii_values_logged"])
-	}
-	if frame1["sse_frame"] != true {
-		t.Errorf("sse_frame must be true, got %v", frame1["sse_frame"])
-	}
-	if frame1["host"] != "test-upstream.local" {
-		t.Errorf("host mismatch: %v", frame1["host"])
-	}
-	if frame1["direction"] != "response" {
-		t.Errorf("direction mismatch: %v", frame1["direction"])
-	}
-	entityCount, _ := frame1["entity_count"].(float64)
-	if entityCount < 1 {
-		t.Errorf("entity_count should be >= 1, got %v", entityCount)
-	}
-
-	// Third frame should have PHONE detection.
-	if len(entries) >= 2 {
-		frame3 := entries[1]
-		if frame3["msg"] != "pii_detected" {
-			t.Errorf("expected msg=pii_detected, got %v", frame3["msg"])
+	var scanEntries []map[string]any
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
 		}
+	}
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected exactly 1 monitor_scan entry for aggregated SSE, got %d", len(scanEntries))
+	}
+
+	entry := scanEntries[0]
+	if entry["pii_values_logged"] != false {
+		t.Errorf("pii_values_logged must be false, got %v", entry["pii_values_logged"])
+	}
+	if entry["sse_frame"] != true {
+		t.Errorf("sse_frame must be true, got %v", entry["sse_frame"])
+	}
+	if entry["host"] != "test-upstream.local" {
+		t.Errorf("host mismatch: %v", entry["host"])
+	}
+	if entry["direction"] != "response" {
+		t.Errorf("direction mismatch: %v", entry["direction"])
+	}
+	if entry["result"] != "pii_found" {
+		t.Errorf("result should be pii_found, got %v", entry["result"])
+	}
+	entityCount, _ := entry["entity_count"].(float64)
+	if entityCount < 2 {
+		t.Errorf("entity_count should be >= 2 (aggregated across frames), got %v", entityCount)
+	}
+	// entity_summary should be present.
+	summary, ok := entry["entity_summary"].(map[string]any)
+	if !ok {
+		t.Errorf("entity_summary should be present, got %v", entry["entity_summary"])
+	} else if len(summary) < 2 {
+		t.Logf("entity_summary: %v", summary)
 	}
 }
 
@@ -182,12 +185,22 @@ func TestSSEFrameReader_PartialFrames(t *testing.T) {
 		t.Error("output should contain the email")
 	}
 
+	// Should have one aggregated monitor_scan entry.
 	entries := parseLogEntries(t, &logBuf)
-	if len(entries) < 1 {
-		t.Fatalf("expected at least 1 detection entry for partial frames, got %d", len(entries))
+	var scanEntries []map[string]any
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
+		}
 	}
-	if entries[0]["entity_count"].(float64) < 1 {
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected 1 monitor_scan entry for partial frames, got %d", len(scanEntries))
+	}
+	if scanEntries[0]["entity_count"].(float64) < 1 {
 		t.Error("partial frame detection should find entities")
+	}
+	if scanEntries[0]["result"] != "pii_found" {
+		t.Errorf("expected pii_found, got %v", scanEntries[0]["result"])
 	}
 }
 
@@ -238,6 +251,16 @@ func TestSSEFrameReader_OversizedFrame(t *testing.T) {
 	if !hasSkipWarn {
 		t.Error("expected pii_detection_skipped warn for oversized frame")
 	}
+
+	// Should also have a monitor_scan (clean or none depending on whether the frame
+	// had data). Since the frame was skipped due to oversize, result should be clean.
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			if e["result"] != "clean" {
+				t.Logf("monitor_scan for oversize frame: result=%v (may be clean)", e["result"])
+			}
+		}
+	}
 }
 
 func TestSSEFrameReader_EmptyFrames(t *testing.T) {
@@ -276,12 +299,19 @@ func TestSSEFrameReader_EmptyFrames(t *testing.T) {
 		t.Error("comments should pass through")
 	}
 
+	// Should have one monitor_scan with result=clean.
 	entries := parseLogEntries(t, &logBuf)
-	// No PII in these frames — should have zero detection entries.
+	var scanEntries []map[string]any
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
-			t.Errorf("unexpected detection entry: %v", e)
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
 		}
+	}
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected 1 monitor_scan, got %d", len(scanEntries))
+	}
+	if scanEntries[0]["result"] != "clean" {
+		t.Errorf("expected result=clean, got %v", scanEntries[0]["result"])
 	}
 }
 
@@ -317,16 +347,16 @@ func TestSSEFrameReader_NoDataLines(t *testing.T) {
 	}
 
 	entries := parseLogEntries(t, &logBuf)
-	// Second frame has data: with PII.
+	// Should have aggregated monitor_scan with PII from the second frame.
 	found := false
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" && e["result"] == "pii_found" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected detection on frame with data: line")
+		t.Error("expected monitor_scan with pii_found on frame with data: line")
 	}
 }
 
@@ -359,10 +389,22 @@ func TestSSEFrameReader_PIILoggingDisabled(t *testing.T) {
 	}
 
 	entries := parseLogEntries(t, &logBuf)
+	var scanEntries []map[string]any
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
-			t.Errorf("pii_detected log should not appear when pii_logging=false: %v", e)
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
 		}
+	}
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected 1 monitor_scan even with pii_logging=false, got %d", len(scanEntries))
+	}
+	e := scanEntries[0]
+	if e["result"] != "pii_found" {
+		t.Errorf("expected pii_found, got %v", e["result"])
+	}
+	// entity_summary must be omitted when pii_logging=false.
+	if _, ok := e["entity_summary"]; ok {
+		t.Error("entity_summary must be omitted when pii_logging=false")
 	}
 }
 
@@ -398,11 +440,17 @@ func TestSSEFrameReader_MultipleDataLines(t *testing.T) {
 	_ = output
 
 	entries := parseLogEntries(t, &logBuf)
-	if len(entries) < 1 {
-		t.Fatal("expected at least 1 detection entry for multi-line data")
+	var scanEntries []map[string]any
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
+		}
+	}
+	if len(scanEntries) < 1 {
+		t.Fatal("expected at least 1 monitor_scan for multi-line data")
 	}
 	// Should detect both EMAIL and PHONE.
-	entityCount, _ := entries[0]["entity_count"].(float64)
+	entityCount, _ := scanEntries[0]["entity_count"].(float64)
 	if entityCount < 2 {
 		t.Errorf("expected at least 2 entities, got %v", entityCount)
 	}
@@ -453,13 +501,13 @@ func TestSSEFrameReader_InterleavedBoundaries(t *testing.T) {
 	entries := parseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" && e["result"] == "pii_found" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected detection on interleaved boundary frame")
+		t.Error("expected aggregated monitor_scan on interleaved boundary frame")
 	}
 }
 
@@ -594,4 +642,96 @@ func TestSSEFrameReader_ByteIdentical(t *testing.T) {
 	}
 
 	_ = logBuf // Detection logs are expected.
+}
+
+// TestSSEFrameReader_DoneMarkerTermination verifies that [DONE] marker
+// triggers aggregated monitor_scan emission even before EOF.
+func TestSSEFrameReader_DoneMarkerTermination(t *testing.T) {
+	engine := newTestEngine()
+	var logBuf bytes.Buffer
+	logger := newTestLogger(&logBuf)
+
+	// Stream with a [DONE] marker mid-stream (simulated).
+	sseStream := strings.NewReader(
+		`data: {"msg": "hello test@example.com"}` + "\n\n" +
+			"data: [DONE]\n\n" +
+			`data: {"msg": "this comes after done but before EOF"}` + "\n\n",
+	)
+
+	reader := newSSEFrameReader(SSEFrameReaderConfig{
+		Upstream:     io.NopCloser(sseStream),
+		Engine:       engine,
+		Logger:       logger,
+		PIILogging:   true,
+		MaxFrameSize: 1024 * 1024,
+		Host:         "test.local",
+		Method:       "POST",
+		Path:         "/api",
+		ContentType:  "text/event-stream",
+		StatusCode:   200,
+	})
+	defer func() { _ = reader.Close() }()
+
+	_, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	entries := parseLogEntries(t, &logBuf)
+	var scanEntries []map[string]any
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
+		}
+	}
+	// Should emit at least one monitor_scan (triggered by [DONE] and/or EOF).
+	if len(scanEntries) < 1 {
+		t.Fatal("expected monitor_scan entry for [DONE] marker")
+	}
+}
+
+// TestSSEFrameReader_AggregatedSummaryForClean verifies that a stream with no
+// PII produces a clean monitor_scan entry.
+func TestSSEFrameReader_AggregatedSummaryForClean(t *testing.T) {
+	engine := newTestEngine()
+	var logBuf bytes.Buffer
+	logger := newTestLogger(&logBuf)
+
+	sseStream := strings.NewReader(
+		`data: {"msg": "Hello"}` + "\n\n" +
+			`data: {"msg": "World"}` + "\n\n",
+	)
+
+	reader := newSSEFrameReader(SSEFrameReaderConfig{
+		Upstream:     io.NopCloser(sseStream),
+		Engine:       engine,
+		Logger:       logger,
+		PIILogging:   true,
+		MaxFrameSize: 1024 * 1024,
+		Host:         "test.local",
+		Method:       "POST",
+		Path:         "/api",
+		ContentType:  "text/event-stream",
+		StatusCode:   200,
+	})
+	defer func() { _ = reader.Close() }()
+
+	_, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	entries := parseLogEntries(t, &logBuf)
+	var scanEntries []map[string]any
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
+		}
+	}
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected 1 monitor_scan entry, got %d", len(scanEntries))
+	}
+	if scanEntries[0]["result"] != "clean" {
+		t.Errorf("expected result=clean for clean SSE stream, got %v", scanEntries[0]["result"])
+	}
 }

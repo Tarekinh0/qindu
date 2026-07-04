@@ -43,10 +43,15 @@ type SSEFrameReaderConfig struct {
 //   - Accumulates bytes until a delimiter is found (LF or CRLF frame boundary)
 //   - Extracts data lines from the frame content
 //   - Runs PII detection on the extracted text
-//   - If entities are found and piiLogging is enabled: emits structured log entry
+//   - Accumulates detected entities across all frames for aggregated logging
 //   - Frame buffer is reset after processing
 //   - If a frame exceeds maxFrameSize: skip detection, WARN, forward bytes, reset
 //   - If a frame doesn't complete within frameTimeout: WARN, skip detection, forward, reset
+//
+// Aggregated logging (Bug 2 fix):
+//   - Detection results are accumulated across frames into an entity summary
+//   - On stream end (io.EOF or data: [DONE]), a single monitor_scan entry is emitted
+//   - This replaces the old per-frame pii_detected entries
 type SSEFrameReader struct {
 	upstream     io.ReadCloser
 	engine       *pii.Engine
@@ -71,23 +76,31 @@ type SSEFrameReader struct {
 
 	// Read buffer for the upstream reader.
 	br *bufio.Reader
+
+	// Aggregated detection state (Bug 2 fix).
+	aggregatedSummary  map[string]int
+	aggregatedCount    int
+	totalBytesAnalyzed int
+	monitorScanEmitted bool
+	doneMarkerSeen     bool
 }
 
 // newSSEFrameReader creates a new SSE frame reader from a configuration struct (PR-102).
 func newSSEFrameReader(cfg SSEFrameReaderConfig) *SSEFrameReader {
 	return &SSEFrameReader{
-		upstream:     cfg.Upstream,
-		engine:       cfg.Engine,
-		logger:       cfg.Logger,
-		piiLogging:   cfg.PIILogging,
-		maxFrameSize: cfg.MaxFrameSize,
-		frameTimeout: defaultFrameTimeout,
-		host:         cfg.Host,
-		method:       cfg.Method,
-		path:         cfg.Path,
-		contentType:  cfg.ContentType,
-		statusCode:   cfg.StatusCode,
-		br:           bufio.NewReader(cfg.Upstream),
+		upstream:          cfg.Upstream,
+		engine:            cfg.Engine,
+		logger:            cfg.Logger,
+		piiLogging:        cfg.PIILogging,
+		maxFrameSize:      cfg.MaxFrameSize,
+		frameTimeout:      defaultFrameTimeout,
+		host:              cfg.Host,
+		method:            cfg.Method,
+		path:              cfg.Path,
+		contentType:       cfg.ContentType,
+		statusCode:        cfg.StatusCode,
+		br:                bufio.NewReader(cfg.Upstream),
+		aggregatedSummary: make(map[string]int),
 	}
 }
 
@@ -154,6 +167,11 @@ func (r *SSEFrameReader) Read(p []byte) (int, error) {
 
 			// Run detection on the frame content.
 			r.detectFrame(frameData)
+
+			// If [DONE] marker was seen, emit aggregated log now.
+			if r.doneMarkerSeen && !r.monitorScanEmitted {
+				r.emitAggregatedMonitorScan()
+			}
 		}
 
 		// Remove processed frames from buffer, keeping any remainder.
@@ -184,16 +202,22 @@ func (r *SSEFrameReader) Read(p []byte) (int, error) {
 	}
 
 	// On EOF, flush any remaining partial frame data (DPO-R6: no detection on partial).
-	if err == io.EOF && r.frameBuf.Len() > 0 {
-		r.logger.Debug("pii_detection_skipped",
-			"reason", "sse_partial_frame_on_close",
-			"direction", "response",
-			"host", r.host,
-			"bytes_remaining", r.frameBuf.Len(),
-			"sse_frame", true,
-		)
-		r.frameBuf.Reset()
-		r.hasFrameData = false
+	// Then emit the aggregated monitor_scan entry for the entire stream (Bug 2 fix).
+	if err == io.EOF && !r.monitorScanEmitted {
+		if r.frameBuf.Len() > 0 {
+			r.logger.Debug("pii_detection_skipped",
+				"reason", "sse_partial_frame_on_close",
+				"direction", "response",
+				"host", r.host,
+				"bytes_remaining", r.frameBuf.Len(),
+				"sse_frame", true,
+			)
+			r.frameBuf.Reset()
+			r.hasFrameData = false
+		}
+
+		// Emit the aggregated monitor_scan entry for the entire SSE stream.
+		r.emitAggregatedMonitorScan()
 	}
 
 	return n, err
@@ -206,10 +230,11 @@ func (r *SSEFrameReader) Close() error {
 	return r.upstream.Close()
 }
 
-// detectFrame runs PII detection on an SSE frame and logs results if entities are found.
+// detectFrame runs PII detection on an SSE frame and accumulates results.
 // It extracts data: lines from the frame content before running detection.
 // Panics in the engine are recovered regardless of piiLogging flag.
-// Detection is gated on piiLogging to avoid wasted CPU (PR-103).
+// Detection always runs — results are accumulated for aggregated monitor_scan
+// logging at stream end (Bug 2 fix).
 func (r *SSEFrameReader) detectFrame(rawFrame []byte) {
 	// Extract text content from SSE data lines.
 	frameText := extractSSEData(string(rawFrame))
@@ -217,10 +242,14 @@ func (r *SSEFrameReader) detectFrame(rawFrame []byte) {
 		return
 	}
 
-	// Skip detection entirely when pii_logging is disabled (PR-103).
-	if !r.piiLogging {
+	// Check for the [DONE] marker (ChatGPT-style stream termination).
+	if strings.TrimSpace(frameText) == "[DONE]" {
+		r.doneMarkerSeen = true
 		return
 	}
+
+	// Track bytes analyzed (the extracted frame text length).
+	r.totalBytesAnalyzed += len(frameText)
 
 	// Run detection with panic recovery.
 	// A panic in Engine.Detect must never crash the reader goroutine.
@@ -251,11 +280,57 @@ func (r *SSEFrameReader) detectFrame(rawFrame []byte) {
 		return
 	}
 
-	// Build structured log entry using the shared helper (PR-106).
-	args := buildLogEntry(r.host, "response", r.method, r.path,
-		r.statusCode, r.contentType, entities, len(frameText), true)
+	// Accumulate entity types for the aggregated monitor_scan entry.
+	for _, e := range entities {
+		r.aggregatedSummary[string(e.Type)]++
+	}
+	r.aggregatedCount += len(entities)
+}
 
-	r.logger.Info("pii_detected", args...)
+// emitAggregatedMonitorScan emits a single monitor_scan log entry for the
+// entire SSE stream, aggregating all frame-level detections (Bug 2 fix).
+// Must only be called once, at stream end.
+func (r *SSEFrameReader) emitAggregatedMonitorScan() {
+	if r.monitorScanEmitted {
+		return
+	}
+	r.monitorScanEmitted = true
+
+	result := "clean"
+	args := []any{
+		"direction", "response",
+		"result", result,
+		"bytes_analyzed", r.totalBytesAnalyzed,
+		"pii_values_logged", false,
+		"sse_frame", true,
+	}
+
+	if r.aggregatedCount > 0 {
+		result = "pii_found"
+		args[3] = result
+		args = append(args, "entity_count", r.aggregatedCount)
+		if r.piiLogging {
+			args = append(args, "entity_summary", r.aggregatedSummary)
+		}
+	}
+
+	if r.host != "" {
+		args = append(args, "host", r.host)
+	}
+	if r.method != "" {
+		args = append(args, "method", r.method)
+	}
+	if r.path != "" {
+		args = append(args, "path", r.path)
+	}
+	if r.statusCode > 0 {
+		args = append(args, "status_code", r.statusCode)
+	}
+	if r.contentType != "" {
+		args = append(args, "content_type", r.contentType)
+	}
+
+	r.logger.Info("monitor_scan", args...)
 }
 
 // extractSSEData parses SSE frame content and extracts text from data: lines.

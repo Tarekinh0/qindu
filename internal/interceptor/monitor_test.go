@@ -12,11 +12,17 @@ import (
 	"github.com/Tarekinh0/qindu/internal/pii"
 )
 
+// testScanPathsBroad returns scan paths that match all standard test URL paths.
+func testScanPathsBroad() []string {
+	// Include /v1/ to match /v1/chat, /v1/chat/completions, /v1/models, etc.
+	return []string{"/v1/", "/api/", "/conversation"}
+}
+
 func TestMonitorInterceptor_InterceptRequest_PIIDetected(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "test.user@example.com", "message": "hello"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -38,7 +44,7 @@ func TestMonitorInterceptor_InterceptRequest_PIIDetected(t *testing.T) {
 	entries := parseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			found = true
 			// Verify compliance marker (DPO-R1).
 			if pl, ok := e["pii_values_logged"]; !ok || pl != false {
@@ -51,6 +57,9 @@ func TestMonitorInterceptor_InterceptRequest_PIIDetected(t *testing.T) {
 			if e["direction"] != "request" {
 				t.Errorf("direction should be 'request', got %v", e["direction"])
 			}
+			if e["result"] != "pii_found" {
+				t.Errorf("result should be 'pii_found', got %v", e["result"])
+			}
 			if e["host"] != "api.openai.com" {
 				t.Errorf("host mismatch: %v", e["host"])
 			}
@@ -61,19 +70,24 @@ func TestMonitorInterceptor_InterceptRequest_PIIDetected(t *testing.T) {
 			if e["path"] != "/v1/chat/completions" {
 				t.Errorf("path mismatch: %v", e["path"])
 			}
+			// entity_summary should be present when pii_logging=true.
+			if _, ok := e["entity_summary"]; !ok {
+				t.Errorf("entity_summary should be present when pii_logging=true")
+			}
 			break
 		}
 	}
 	if !found {
-		t.Fatal("expected pii_detected log entry, found none")
+		t.Fatal("expected monitor_scan log entry, found none")
 	}
 }
 
-func TestMonitorInterceptor_InterceptRequest_NoPII_Silent(t *testing.T) {
+func TestMonitorInterceptor_InterceptRequest_NoPII_CleanLog(t *testing.T) {
+	// Bug 2 fix: even clean messages produce a monitor_scan with result=clean.
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	body := `{"message": "hello world", "topic": "weather"}`
 	req := httptest.NewRequest("POST", "/v1/chat", strings.NewReader(body))
@@ -90,20 +104,37 @@ func TestMonitorInterceptor_InterceptRequest_NoPII_Silent(t *testing.T) {
 		t.Errorf("body not byte-identical")
 	}
 
-	// No PII detected — should have zero detection entries.
+	// Should have exactly one monitor_scan entry with result=clean.
 	entries := parseLogEntries(t, &logBuf)
+	var scanEntries []map[string]any
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
-			t.Errorf("unexpected pii_detected entry: %v", e)
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
 		}
+	}
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected exactly 1 monitor_scan entry, got %d", len(scanEntries))
+	}
+	e := scanEntries[0]
+	if e["result"] != "clean" {
+		t.Errorf("clean body should produce result=clean, got %v", e["result"])
+	}
+	if e["direction"] != "request" {
+		t.Errorf("direction should be 'request', got %v", e["direction"])
+	}
+	// entity_count and entity_summary must NOT be present for clean results.
+	if _, ok := e["entity_count"]; ok {
+		t.Error("entity_count should not be present for clean result")
 	}
 }
 
 func TestMonitorInterceptor_InterceptRequest_PIILoggingDisabled(t *testing.T) {
+	// When pii_logging=false: engine still runs, monitor_scan still emitted,
+	// but entity_summary is omitted for privacy.
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, false, logger) // pii_logging=false
+	mi := NewMonitorInterceptor(engine, false, logger, testScanPathsBroad()) // pii_logging=false
 
 	body := `{"email": "test.user@example.com"}`
 	req := httptest.NewRequest("POST", "/v1/chat", strings.NewReader(body))
@@ -121,11 +152,59 @@ func TestMonitorInterceptor_InterceptRequest_PIILoggingDisabled(t *testing.T) {
 		t.Error("body must be forwarded even when pii_logging=false")
 	}
 
-	// Zero detection entries when pii_logging is disabled (DPO-R3, SR-6).
+	// Should have a monitor_scan entry with result=pii_found but NO entity_summary.
+	entries := parseLogEntries(t, &logBuf)
+	var scanEntries []map[string]any
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
+		}
+	}
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected exactly 1 monitor_scan entry, got %d", len(scanEntries))
+	}
+	e := scanEntries[0]
+	if e["result"] != "pii_found" {
+		t.Errorf("expected result=pii_found, got %v", e["result"])
+	}
+	if _, ok := e["entity_count"]; !ok {
+		t.Error("entity_count should be present even when pii_logging=false")
+	}
+	// entity_summary must NOT be present when pii_logging=false.
+	if _, ok := e["entity_summary"]; ok {
+		t.Error("entity_summary must be omitted when pii_logging=false")
+	}
+}
+
+func TestMonitorInterceptor_InterceptRequest_PathFilterSkip(t *testing.T) {
+	// Bug 1 fix: paths not matching scan_paths whitelist are skipped entirely.
+	engine := newTestEngineFull()
+	var logBuf bytes.Buffer
+	logger := newTestLogger(&logBuf)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
+
+	// Telemetry path that should NOT be scanned.
+	body := `{"email": "test.user@example.com"}`
+	req := httptest.NewRequest("POST", "/ces/statsc/flush", strings.NewReader(body))
+	req.Host = "api.openai.com"
+
+	_, newBody, err := mi.InterceptRequest(req)
+	if err != nil {
+		t.Fatalf("InterceptRequest failed: %v", err)
+	}
+	defer func() { _ = newBody.Close() }()
+
+	returnedBytes, _ := io.ReadAll(newBody)
+	if string(returnedBytes) != body {
+		t.Error("body must be forwarded unchanged even when path is skipped")
+	}
+
+	// No monitor_scan or pii_detected entries should appear.
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
-			t.Errorf("pii_detected should not appear when pii_logging=false: %v", e)
+		msg, _ := e["msg"].(string)
+		if msg == "monitor_scan" || msg == "pii_detected" {
+			t.Errorf("no scan logs expected for skipped path, got: %v", e)
 		}
 	}
 }
@@ -134,7 +213,7 @@ func TestMonitorInterceptor_InterceptRequest_OversizedBody(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	// Create a body larger than the engine limit.
 	bigBody := strings.Repeat("A", pii.DefaultMaxInputBytes+1000)
@@ -176,7 +255,7 @@ func TestMonitorInterceptor_InterceptRequest_ContentLengthPreCheck(t *testing.T)
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	body := `test body`
 	req := httptest.NewRequest("POST", "/v1/chat", strings.NewReader(body))
@@ -213,7 +292,7 @@ func TestMonitorInterceptor_InterceptRequest_PathSanitization(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "alice@example.com"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions?model=gpt-4&api_key=secret", strings.NewReader(body))
@@ -231,7 +310,7 @@ func TestMonitorInterceptor_InterceptRequest_PathSanitization(t *testing.T) {
 
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			if path, ok := e["path"].(string); ok {
 				if strings.Contains(path, "?") {
 					t.Errorf("path must not contain query parameters, got: %s", path)
@@ -249,7 +328,7 @@ func TestMonitorInterceptor_InterceptRequest_LongPathTruncation(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	longPath := "/v1/" + strings.Repeat("a", 2000)
 	body := `{"email": "test@example.com"}`
@@ -265,7 +344,7 @@ func TestMonitorInterceptor_InterceptRequest_LongPathTruncation(t *testing.T) {
 
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			if path, ok := e["path"].(string); ok {
 				if len(path) > maxLogPathLen {
 					t.Errorf("path must be truncated to %d bytes, got %d bytes: %s", maxLogPathLen, len(path), path)
@@ -279,7 +358,7 @@ func TestMonitorInterceptor_InterceptResponse_JSONWithPII(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	respBody := `{"result": "Contact +1-555-0100 for support"}`
 	resp := &http.Response{
@@ -308,7 +387,7 @@ func TestMonitorInterceptor_InterceptResponse_JSONWithPII(t *testing.T) {
 	entries := parseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			found = true
 			if e["direction"] != "response" {
 				t.Errorf("direction should be 'response', got %v", e["direction"])
@@ -316,11 +395,14 @@ func TestMonitorInterceptor_InterceptResponse_JSONWithPII(t *testing.T) {
 			if e["pii_values_logged"] != false {
 				t.Errorf("pii_values_logged must be false")
 			}
+			if e["result"] != "pii_found" {
+				t.Errorf("result should be 'pii_found', got %v", e["result"])
+			}
 			break
 		}
 	}
 	if !found {
-		t.Fatal("expected pii_detected log entry for response with PII")
+		t.Fatal("expected monitor_scan log entry for response with PII")
 	}
 }
 
@@ -328,7 +410,7 @@ func TestMonitorInterceptor_InterceptResponse_BinarySkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	respBody := "fake image bytes"
 	resp := &http.Response{
@@ -339,6 +421,7 @@ func TestMonitorInterceptor_InterceptResponse_BinarySkip(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
+			URL:  mustParseURL("/v1/chat"),
 		},
 	}
 
@@ -373,7 +456,7 @@ func TestMonitorInterceptor_InterceptResponse_MissingContentType(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	respBody := `test@example.com`
 	resp := &http.Response{
@@ -382,6 +465,7 @@ func TestMonitorInterceptor_InterceptResponse_MissingContentType(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
+			URL:  mustParseURL("/v1/chat"),
 		},
 	}
 
@@ -398,7 +482,7 @@ func TestMonitorInterceptor_InterceptResponse_MissingContentType(t *testing.T) {
 
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			t.Errorf("should not detect PII when Content-Type is missing: %v", e)
 		}
 	}
@@ -408,7 +492,7 @@ func TestMonitorInterceptor_InterceptResponse_MultipartSkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	respBody := "--boundary\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\ntest@example.com\r\n--boundary--"
 	resp := &http.Response{
@@ -419,6 +503,7 @@ func TestMonitorInterceptor_InterceptResponse_MultipartSkip(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
+			URL:  mustParseURL("/v1/chat"),
 		},
 	}
 
@@ -435,7 +520,7 @@ func TestMonitorInterceptor_InterceptResponse_MultipartSkip(t *testing.T) {
 
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			t.Errorf("should not detect PII in multipart: %v", e)
 		}
 	}
@@ -445,7 +530,7 @@ func TestMonitorInterceptor_InterceptResponse_SSERouting(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	respBody := `data: {"msg": "test.user@example.com"}` + "\n\n"
 	resp := &http.Response{
@@ -474,16 +559,23 @@ func TestMonitorInterceptor_InterceptResponse_SSERouting(t *testing.T) {
 	entries := parseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			found = true
 			if sse, _ := e["sse_frame"].(bool); !sse {
 				t.Error("SSE detection should have sse_frame: true")
+			}
+			if e["direction"] != "response" {
+				t.Errorf("SSE direction should be 'response', got %v", e["direction"])
+			}
+			// Aggregated: should have entity_count >= 1
+			if ec, _ := e["entity_count"].(float64); ec < 1 {
+				t.Errorf("entity_count should be >= 1, got %v", ec)
 			}
 			break
 		}
 	}
 	if !found {
-		t.Fatal("expected pii_detected for SSE stream with PII")
+		t.Fatal("expected monitor_scan for SSE stream with PII")
 	}
 }
 
@@ -491,7 +583,7 @@ func TestMonitorInterceptor_InterceptResponse_OctetStreamSkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	resp := &http.Response{
 		StatusCode: 200,
@@ -501,6 +593,7 @@ func TestMonitorInterceptor_InterceptResponse_OctetStreamSkip(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader("binary stuff")),
 		Request: &http.Request{
 			Host: "api.openai.com",
+			URL:  mustParseURL("/v1/chat"),
 		},
 	}
 
@@ -517,7 +610,7 @@ func TestMonitorInterceptor_InterceptResponse_OctetStreamSkip(t *testing.T) {
 
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			t.Errorf("should not detect PII in octet-stream: %v", e)
 		}
 	}
@@ -528,7 +621,7 @@ func TestMonitorInterceptor_InterceptResponse_ZeroPIIInLogs(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "test.user@example.com", "phone": "+1-555-0100", "card": "4111111111111111"}`
 	resp := &http.Response{
@@ -574,7 +667,7 @@ func TestMonitorInterceptor_InterceptRequest_NilBody(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Host = "api.openai.com"
@@ -595,7 +688,7 @@ func TestMonitorInterceptor_InterceptResponse_NilBody(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	resp := &http.Response{
 		StatusCode: 200,
@@ -605,6 +698,7 @@ func TestMonitorInterceptor_InterceptResponse_NilBody(t *testing.T) {
 		Body: nil,
 		Request: &http.Request{
 			Host: "api.openai.com",
+			URL:  mustParseURL("/v1/chat"),
 		},
 	}
 
@@ -624,7 +718,7 @@ func TestMonitorInterceptor_InterceptResponse_ContentTypeWithParams(t *testing.T
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "test@example.com"}`
 	resp := &http.Response{
@@ -648,7 +742,7 @@ func TestMonitorInterceptor_InterceptResponse_ContentTypeWithParams(t *testing.T
 
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			if ct, ok := e["content_type"].(string); ok {
 				if strings.Contains(ct, "charset") {
 					t.Errorf("content_type should not contain parameters, got: %s", ct)
@@ -665,7 +759,7 @@ func TestMonitorInterceptor_MultipleEntityTypes(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	body := `Contact test.user@example.com or call +1-555-0100. IBAN: GB29NWBK60161331926819`
 	resp := &http.Response{
@@ -689,7 +783,7 @@ func TestMonitorInterceptor_MultipleEntityTypes(t *testing.T) {
 
 	entries := parseLogEntries(t, &logBuf)
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
+		if e["msg"] == "monitor_scan" {
 			ec, _ := e["entity_count"].(float64)
 			if ec < 2 {
 				t.Errorf("expected at least 2 entities, got %v", ec)
@@ -710,7 +804,7 @@ func TestMonitorInterceptor_ResponseOversize(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	bigData := strings.Repeat("x", pii.DefaultMaxInputBytes+500)
 	body := `{"data": "` + bigData + `"}`
@@ -722,6 +816,7 @@ func TestMonitorInterceptor_ResponseOversize(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(body)),
 		Request: &http.Request{
 			Host: "api.openai.com",
+			URL:  mustParseURL("/v1/chat"),
 		},
 	}
 
@@ -851,6 +946,79 @@ func TestExtractSSEData(t *testing.T) {
 	}
 }
 
+// TestShouldScanPath tests the path filtering logic.
+func TestShouldScanPath(t *testing.T) {
+	mi := NewMonitorInterceptor(newTestEngine(), false, nil, defaultScanPaths())
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"conversation endpoint", "/backend-anon/conversation", true},
+		{"claude messages", "/v1/messages", true},
+		{"openai chat completions", "/v1/chat/completions", true},
+		{"gemini generate", "/v1beta/models/gemini-pro:generateContent", true},
+		{"copilot chat", "/chat/completions", true},
+		{"telemetry flush", "/ces/statsc/flush", false},
+		{"telemetry intake", "/ces/v1/telemetry/intake", false},
+		{"telemetry track", "/ces/v1/t", false},
+		{"sentinel endpoint", "/backend-anon/sentinel/chat-requirements/finalize", false},
+		{"health check", "/health", false},
+		{"case insensitive", "/v1/MESSAGES", true},
+		{"empty path", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mi.shouldScanPath(tt.path)
+			if got != tt.want {
+				t.Errorf("shouldScanPath(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMonitorInterceptor_ResponsePathFilterSkip verifies path filtering on responses.
+func TestMonitorInterceptor_ResponsePathFilterSkip(t *testing.T) {
+	engine := newTestEngineFull()
+	var logBuf bytes.Buffer
+	logger := newTestLogger(&logBuf)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
+
+	respBody := `{"email": "test@example.com"}`
+	resp := &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+		Body: io.NopCloser(strings.NewReader(respBody)),
+		Request: &http.Request{
+			Host: "api.openai.com",
+			URL:  mustParseURL("/ces/statsc/flush"),
+		},
+	}
+
+	_, newBody, err := mi.InterceptResponse(resp)
+	if err != nil {
+		t.Fatalf("InterceptResponse failed: %v", err)
+	}
+	defer func() { _ = newBody.Close() }()
+
+	returnedBytes, _ := io.ReadAll(newBody)
+	if string(returnedBytes) != respBody {
+		t.Error("body must be forwarded unchanged")
+	}
+
+	// No monitor_scan entries for skipped path.
+	entries := parseLogEntries(t, &logBuf)
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			t.Errorf("unexpected monitor_scan for skipped response path: %v", e)
+		}
+	}
+}
+
 // mustParseURL parses a URL and panics on error (for test setup only).
 func mustParseURL(rawURL string) *url.URL {
 	u, err := url.Parse(rawURL)
@@ -895,7 +1063,7 @@ func TestMonitorInterceptor_OversizeBodyWithClosingReader(t *testing.T) {
 	)
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(smallEngine, true, logger)
+	mi := NewMonitorInterceptor(smallEngine, true, logger, testScanPathsBroad())
 
 	// Body is 300 bytes, limit is 100. Body exceeds limit.
 	bodyStr := strings.Repeat("ABCDEFGHIJ", 30) // 300 bytes
@@ -929,12 +1097,12 @@ func TestMonitorInterceptor_OversizeBodyWithClosingReader(t *testing.T) {
 }
 
 // TestMonitorInterceptor_InterceptResponse_PIILoggingDisabled verifies FR-2:
-// pii_logging=false suppresses detection logs on the non-SSE response path.
+// pii_logging=false suppresses entity_summary but still emits monitor_scan.
 func TestMonitorInterceptor_InterceptResponse_PIILoggingDisabled(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, false, logger)
+	mi := NewMonitorInterceptor(engine, false, logger, testScanPathsBroad())
 
 	respBody := `{"email": "test@example.com", "phone": "+1-555-0100"}`
 	resp := &http.Response{
@@ -957,12 +1125,26 @@ func TestMonitorInterceptor_InterceptResponse_PIILoggingDisabled(t *testing.T) {
 	_, _ = io.ReadAll(newBody)
 
 	// Body must still be forwarded.
-	// Zero detection log entries.
+	// Should have monitor_scan with result=pii_found, entity_count, but NO entity_summary.
 	entries := parseLogEntries(t, &logBuf)
+	var scanEntries []map[string]any
 	for _, e := range entries {
-		if e["msg"] == "pii_detected" {
-			t.Errorf("pii_detected should not appear when pii_logging=false on response: %v", e)
+		if e["msg"] == "monitor_scan" {
+			scanEntries = append(scanEntries, e)
 		}
+	}
+	if len(scanEntries) != 1 {
+		t.Fatalf("expected 1 monitor_scan entry, got %d", len(scanEntries))
+	}
+	e := scanEntries[0]
+	if e["result"] != "pii_found" {
+		t.Errorf("expected result=pii_found, got %v", e["result"])
+	}
+	if _, ok := e["entity_count"]; !ok {
+		t.Error("entity_count should be present")
+	}
+	if _, ok := e["entity_summary"]; ok {
+		t.Error("entity_summary must be omitted when pii_logging=false")
 	}
 }
 
@@ -972,7 +1154,7 @@ func TestMonitorInterceptor_ConcurrentAccess(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger)
+	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad())
 
 	const goroutines = 10
 	errs := make(chan error, goroutines*2)
@@ -1132,7 +1314,7 @@ func TestCombinedReadCloser_OversizeBodyCloseIsPropagated(t *testing.T) {
 	)
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(smallEngine, true, logger)
+	mi := NewMonitorInterceptor(smallEngine, true, logger, testScanPathsBroad())
 
 	bodyStr := strings.Repeat("ABCDEFGHIJ", 30) // 300 bytes > 100 limit
 	cr := newClosingReader(bodyStr)
@@ -1174,5 +1356,51 @@ func TestCombinedReadCloser_OversizeBodyCloseIsPropagated(t *testing.T) {
 	// After close, original body must be closed.
 	if !cr.closed {
 		t.Error("original body was NOT closed when returned body was closed (PR-002 leak)")
+	}
+}
+
+// TestBuildEntitySummary verifies entity count aggregation.
+func TestBuildEntitySummary(t *testing.T) {
+	entities := []pii.Entity{
+		{Type: pii.Email, Source: pii.SourceRegex, Confidence: 0.95},
+		{Type: pii.Phone, Source: pii.SourceRegex, Confidence: 0.90},
+		{Type: pii.Email, Source: pii.SourceRegex, Confidence: 0.85},
+	}
+	summary := buildEntitySummary(entities)
+	if summary["EMAIL"] != 2 {
+		t.Errorf("expected EMAIL count 2, got %d", summary["EMAIL"])
+	}
+	if summary["PHONE"] != 1 {
+		t.Errorf("expected PHONE count 1, got %d", summary["PHONE"])
+	}
+}
+
+// TestMonitorInterceptor_InterceptRequest_PathFilterSubstringMatch verifies
+// that substring matching works correctly for path filtering.
+func TestMonitorInterceptor_InterceptRequest_PathFilterSubstringMatch(t *testing.T) {
+	engine := newTestEngineFull()
+	var logBuf bytes.Buffer
+	logger := newTestLogger(&logBuf)
+	// Only scan /conversation paths.
+	mi := NewMonitorInterceptor(engine, true, logger, []string{"/conversation"})
+
+	body := `{"email": "test@example.com"}`
+	// This path contains /chat/completions but NOT /conversation.
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Host = "api.openai.com"
+
+	_, newBody, err := mi.InterceptRequest(req)
+	if err != nil {
+		t.Fatalf("InterceptRequest failed: %v", err)
+	}
+	defer func() { _ = newBody.Close() }()
+	_, _ = io.ReadAll(newBody)
+
+	// Should be skipped — no monitor_scan.
+	entries := parseLogEntries(t, &logBuf)
+	for _, e := range entries {
+		if e["msg"] == "monitor_scan" {
+			t.Errorf("unexpected monitor_scan for non-conversation path: %v", e)
+		}
 	}
 }

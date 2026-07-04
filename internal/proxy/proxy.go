@@ -98,7 +98,7 @@ func selectInterceptor(cfg *policy.Config, logger *slog.Logger) (Interceptor, er
 			"pii_logging", cfg.Logging.PIILogging,
 		)
 		// maxInputLen is read from the engine itself — no redundant parameter (PR-102).
-		return interceptor.NewMonitorInterceptor(engine, cfg.Logging.PIILogging, logger), nil
+		return interceptor.NewMonitorInterceptor(engine, cfg.Logging.PIILogging, logger, cfg.Agent.Monitor.ScanPaths), nil
 
 	case "enforce":
 		// Enforce mode is not yet implemented (QINDU-0009).
