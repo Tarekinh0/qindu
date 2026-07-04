@@ -34,7 +34,7 @@ QINDU-0007: Mode Monitor
 ### Phase 3: Vault & Réhydratation (Sprints QINDU-0008 → QINDU-0010)
 
 ```
-QINDU-0008: Vault local chiffré
+QINDU-0008: Vault local chiffré       ← READY
 QINDU-0009: Mode Enforce + Réhydratation non-streaming
 QINDU-0010: Réhydratation streaming (SSE)
 ```
@@ -85,6 +85,6 @@ _None currently._
 
 1. **M0 - Proxy fonctionnel**: QINDU-0001 done → le proxy tourne, CONNECT, MITM, PAC, logs
 2. **M1 - Installable**: QINDU-0002 + QINDU-0004 done → installation/désinstallation Windows complète, CI verte (0 issues golangci-lint, 5/5 packages test pass)
-3. **M2 - PII Ready**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles
+3. **M2 - PII Ready**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles, mode monitor avec path whitelisting + per-message logging + MSI uninstall clean
 4. **M3 - MVP Privacy**: QINDU-0008 + QINDU-0009 + QINDU-0010 done → flux complet tokenisation → réhydratation
 5. **M4 - V1 Complete**: QINDU-0011 + QINDU-0012 + QINDU-0013 done → ChatGPT et Claude supportés

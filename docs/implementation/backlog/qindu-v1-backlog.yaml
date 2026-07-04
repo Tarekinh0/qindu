@@ -200,13 +200,13 @@ items:
   closure_date: "2026-07-04"
   go_version: "1.26"
   test_count: 295
-  bugs_fixed: 0
+  bugs_fixed: 5
 
 # ─── Phase 3: Vault et Réhydratation ─────────────────────────────
 
 - id: QINDU-0008
   title: "Vault local chiffré"
-  status: DRAFT
+  status: READY
   adr_ref: [ADR-003, ADR-004, ADR-008]
   domains: [vault, crypto, dpapi]
   dependencies: [QINDU-0006]
