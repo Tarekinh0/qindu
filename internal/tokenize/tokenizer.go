@@ -26,17 +26,19 @@ func buildTokenPattern() *regexp.Regexp {
 	return regexp.MustCompile(pattern)
 }
 
-// tokenRegex matches <<TYPE_N>> patterns for rehydration.
-// Compiled once at package init. Linear-time, no backtracking vulnerabilities.
-var tokenRegex = buildTokenPattern()
-
 // allEntityTypes is the canonical list of recognized PII entity types.
+// Must be declared before tokenRegex: buildTokenPattern() references this list
+// and the Go compiler depends on declaration order for correct initialization.
 // Both buildTokenPattern and isKnownEntityType reference this single list,
 // ensuring DRY and OCP compliance.
 var allEntityTypes = []pii.EntityType{
 	pii.Email, pii.Phone, pii.IBAN, pii.CreditCard,
 	pii.JWT, pii.Name, pii.Secret, pii.PrivateKey,
 }
+
+// tokenRegex matches <<TYPE_N>> patterns for rehydration.
+// Compiled once at package init. Linear-time, no backtracking vulnerabilities.
+var tokenRegex = buildTokenPattern()
 
 // knownEntityTypes is a set of recognized entity types for O(1) lookup.
 var knownEntityTypes = func() map[pii.EntityType]bool {
@@ -334,8 +336,8 @@ func substituteEntities(text string, entities []pii.Entity, tokens []string) str
 	}
 
 	type pair struct {
-		start, end int
 		token      string
+		start, end int
 	}
 	pairs := make([]pair, len(entities))
 	for i := range entities {

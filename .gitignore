@@ -4,3 +4,4 @@
 
 # SSH keys for Qindu VM testing
 .ssh/
+build/

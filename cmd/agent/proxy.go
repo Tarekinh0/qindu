@@ -46,7 +46,7 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 	// can configure "output: file" in config to persist logs to disk.
 	// The returned closer must be called on shutdown to release the log file handle.
 	logger, logCloser := logging.InitLogger(cfg.Logging.Level, cfg.Logging.Format, cfg.Logging.Output, cfg.Logging.LogDir)
-	defer logCloser.Close()
+	defer func() { _ = logCloser.Close() }()
 	logger.Info("Qindu starting",
 		"version", appVersion,
 		"listen_addr", cfg.ListenAddress(),
@@ -67,7 +67,7 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 	// It is optional — if initialization fails, the proxy starts in memory-only
 	// mode (vault = nil). The proxy operates identically with or
 	// without a vault (DD-2, DD-11).
-	vaultInst, _ := initVault(cfg, logger)
+	vaultInst := initVault(cfg, logger)
 
 	// Create the proxy with optional vault persister.
 	proxyHandler, err := proxy.NewProxy(cfg, ca, certCache, logger, appVersion)
@@ -105,18 +105,20 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 }
 
 // initVault initializes the encrypted vault (QINDU-0008).
-// Returns the vault instance and a persister interface, or nil/nil
+// Returns the vault instance (which implements TokenPersister), or nil
 // if any initialization step fails. All cleanup (close crypto, close bolt)
 // is handled internally on error paths via defer.
 // The caller must call vaultInst.Close() during shutdown if non-nil.
-func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.TokenPersister) {
+// The TokenPersister interface returned by the vault will be wired to
+// the tokenizer in QINDU-0009 (enforce mode).
+func initVault(cfg *policy.Config, logger *slog.Logger) *vault.Vault {
 	ttl, ttlErr := cfg.Agent.Vault.ParseTTL()
 	if ttlErr != nil {
 		logger.Error("vault: invalid TTL in config — vault disabled",
 			"error", ttlErr,
 			"pii_values_logged", false,
 		)
-		return nil, nil
+		return nil
 	}
 
 	vaultUser, lookupErr := session.LookupVaultPath()
@@ -125,7 +127,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.Tok
 			"error", lookupErr,
 			"pii_values_logged", false,
 		)
-		return nil, nil
+		return nil
 	}
 
 	if err := os.MkdirAll(vaultUser.VaultPath, 0700); err != nil {
@@ -133,7 +135,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.Tok
 			"error", err,
 			"pii_values_logged", false,
 		)
-		return nil, nil
+		return nil
 	}
 
 	// Initialize crypto service for AES-256-GCM encryption.
@@ -143,7 +145,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.Tok
 			"error", cryptoErr,
 			"pii_values_logged", false,
 		)
-		return nil, nil
+		return nil
 	}
 
 	// Open bbolt database.
@@ -157,7 +159,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.Tok
 			"pii_values_logged", false,
 		)
 		cryptoService.Close()
-		return nil, nil
+		return nil
 	}
 
 	if bucketErr := db.Update(func(tx *bolt.Tx) error {
@@ -170,7 +172,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.Tok
 		)
 		db.Close()
 		cryptoService.Close()
-		return nil, nil
+		return nil
 	}
 
 	// Create the vault.
@@ -182,7 +184,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.Tok
 		)
 		db.Close()
 		cryptoService.Close()
-		return nil, nil
+		return nil
 	}
 
 	// Start background goroutines (async writer, TTL sweeper).
@@ -200,7 +202,7 @@ func initVault(cfg *policy.Config, logger *slog.Logger) (*vault.Vault, vault.Tok
 		"pii_values_logged", false,
 	)
 
-	return vaultInst, vaultInst
+	return vaultInst
 }
 
 // redactHomePath replaces the user's home directory prefix with "~" (Unix)

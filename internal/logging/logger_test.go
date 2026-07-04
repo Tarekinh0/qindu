@@ -14,7 +14,7 @@ import (
 // TestInitLogger_JSON verifies JSON handler is created for "json" format.
 func TestInitLogger_JSON(t *testing.T) {
 	logger, closer := InitLogger("info", "json", "stderr", "")
-	defer closer.Close()
+	defer func() { _ = closer.Close() }()
 	if logger == nil {
 		t.Fatal("InitLogger returned nil")
 	}
@@ -35,7 +35,7 @@ func TestInitLogger_JSON(t *testing.T) {
 // TestInitLogger_Text verifies text handler for "text" format.
 func TestInitLogger_Text(t *testing.T) {
 	logger, closer := InitLogger("info", "text", "stderr", "")
-	defer closer.Close()
+	defer func() { _ = closer.Close() }()
 	if logger == nil {
 		t.Fatal("InitLogger returned nil")
 	}
@@ -56,7 +56,7 @@ func TestInitLogger_Levels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.level, func(t *testing.T) {
 			logger, closer := InitLogger(tt.level, "json", "stderr", "")
-			defer closer.Close()
+			defer func() { _ = closer.Close() }()
 			if logger == nil {
 				t.Errorf("InitLogger with level %q returned nil", tt.level)
 			}
@@ -68,7 +68,7 @@ func TestInitLogger_Levels(t *testing.T) {
 func TestInitLogger_FileOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger, closer := InitLogger("info", "json", "file", tmpDir)
-	defer closer.Close()
+	defer func() { _ = closer.Close() }()
 	if logger == nil {
 		t.Fatal("InitLogger with file output returned nil")
 	}
@@ -94,7 +94,7 @@ func TestInitLogger_FileOutput(t *testing.T) {
 func TestInitLogger_BothOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 	logger, closer := InitLogger("info", "json", "both", tmpDir)
-	defer closer.Close()
+	defer func() { _ = closer.Close() }()
 	if logger == nil {
 		t.Fatal("InitLogger with both output returned nil")
 	}
@@ -120,7 +120,7 @@ func TestInitLogger_BothOutput(t *testing.T) {
 func TestInitLogger_FileOutputFallback(t *testing.T) {
 	// Use a path that can't be a directory (nested under a file)
 	logger, closer := InitLogger("info", "json", "file", "/dev/null/subdir")
-	defer closer.Close()
+	defer func() { _ = closer.Close() }()
 	if logger == nil {
 		t.Fatal("InitLogger should never return nil, even on file failure")
 	}

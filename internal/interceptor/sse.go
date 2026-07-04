@@ -24,15 +24,15 @@ const defaultFrameTimeout = 30 * time.Second
 // Uses a struct to avoid the 9-positional-parameter constructor anti-pattern (PR-102).
 type SSEFrameReaderConfig struct {
 	Upstream     io.ReadCloser
-	Engine       *pii.Engine
-	Logger       *slog.Logger
-	PIILogging   bool
-	MaxFrameSize int
 	Host         string
 	Method       string
 	Path         string
 	ContentType  string
+	Engine       *pii.Engine
+	Logger       *slog.Logger
+	MaxFrameSize int
 	StatusCode   int
+	PIILogging   bool
 }
 
 // SSEFrameReader wraps an upstream response body and processes SSE frames
@@ -53,34 +53,24 @@ type SSEFrameReaderConfig struct {
 //   - On stream end (io.EOF or data: [DONE]), a single monitor_scan entry is emitted
 //   - This replaces the old per-frame pii_detected entries
 type SSEFrameReader struct {
-	upstream     io.ReadCloser
-	engine       *pii.Engine
-	logger       *slog.Logger
-	piiLogging   bool
-	maxFrameSize int
-
-	// Frame accumulation buffer.
-	frameBuf bytes.Buffer
-
-	// For timeout tracking on incomplete frames.
-	frameStartTime time.Time
-	frameTimeout   time.Duration
-	hasFrameData   bool
-
-	// Metadata for log entries (set at construction time).
-	host        string
-	method      string
-	path        string
-	contentType string
-	statusCode  int
-
-	// Read buffer for the upstream reader.
-	br *bufio.Reader
-
-	// Aggregated detection state (Bug 2 fix).
+	upstream           io.ReadCloser
+	host               string
+	method             string
+	path               string
+	contentType        string
+	frameBuf           bytes.Buffer
+	frameStartTime     time.Time
+	engine             *pii.Engine
+	logger             *slog.Logger
+	br                 *bufio.Reader
 	aggregatedSummary  map[string]int
+	maxFrameSize       int
+	frameTimeout       time.Duration
+	statusCode         int
 	aggregatedCount    int
 	totalBytesAnalyzed int
+	piiLogging         bool
+	hasFrameData       bool
 	monitorScanEmitted bool
 	doneMarkerSeen     bool
 }

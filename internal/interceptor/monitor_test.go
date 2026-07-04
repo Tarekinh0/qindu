@@ -1296,8 +1296,8 @@ func TestCombinedReadCloser_ClosePropagation(t *testing.T) {
 	}
 
 	// Close should propagate to underlying closer.
-	if err := combined.Close(); err != nil {
-		t.Errorf("Close() failed: %v", err)
+	if closeErr := combined.Close(); closeErr != nil {
+		t.Errorf("Close() failed: %v", closeErr)
 	}
 	if !cr.closed {
 		t.Error("underlying closer was NOT closed by combinedReadCloser.Close()")

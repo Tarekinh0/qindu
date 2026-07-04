@@ -30,12 +30,12 @@ type VaultConfig struct {
 
 // AgentConfig holds agent-level settings.
 type AgentConfig struct {
+	Monitor    MonitorConfig `yaml:"monitor"`
 	ListenAddr string        `yaml:"listen_addr"`
 	Mode       string        `yaml:"mode"`
 	FailMode   string        `yaml:"fail_mode"`
-	ListenPort int           `yaml:"listen_port"`
-	Monitor    MonitorConfig `yaml:"monitor"`
 	Vault      VaultConfig   `yaml:"vault"`
+	ListenPort int           `yaml:"listen_port"`
 }
 
 // TLSConfig holds TLS/CA settings.
@@ -60,9 +60,9 @@ type ProviderConfig struct {
 type LoggingConfig struct {
 	Level      string `yaml:"level"`
 	Format     string `yaml:"format"`
-	PIILogging bool   `yaml:"pii_logging"`
 	Output     string `yaml:"output"`  // "stderr" (default), "file", or "both"
 	LogDir     string `yaml:"log_dir"` // directory for log files (empty = auto-detect)
+	PIILogging bool   `yaml:"pii_logging"`
 }
 
 // LoadConfig reads and parses a YAML config file, returning the validated Config.

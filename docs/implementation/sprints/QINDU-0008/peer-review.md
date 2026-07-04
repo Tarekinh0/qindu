@@ -1,9 +1,9 @@
 # Peer Review — QINDU-0008: Vault local chiffré
 
-**Reviewer**: qindu-peer-reviewer (blank-slate — fourth session)
-**Date**: 2026-07-04
-**Scope**: All `.go` files in `internal/crypto/`, `internal/vault/`, `internal/session/`, `internal/tokenize/`, `internal/policy/`, `internal/proxy/`, `internal/interceptor/`, `cmd/agent/`
-**Standards Applied**: Clean Code (Martin), Pragmatic Programmer (Hunt/Thomas), SOLID (Uncle Bob), Go Proverbs (Pike), Effective Go, DDD (Evans), Code Complete (McConnell)
+**Reviewer**: `qindu-peer-reviewer` (fresh session, blank-slate)  
+**Date**: 2026-07-04  
+**Scope**: `internal/crypto`, `internal/vault`, `internal/session`, `internal/tokenize` (persister integration), `cmd/agent/proxy.go` (vault init/shutdown), `internal/policy/config.go` (TTL validation), `configs/default.yaml`  
+**Pre-verified**: `go build ./...` ✅ | `GOOS=windows go build ./internal/session` ✅ | `go vet ./...` ✅ (zero warnings) | `go test -race -count=1 ./...` ✅ (12 pkgs, zero failures, zero races) | `go fmt ./... && git diff --exit-code` ✅
 
 ---
 
@@ -11,210 +11,282 @@
 
 | Framework | Grade | Justification |
 |-----------|-------|---------------|
-| **Clean Code** | B | Good naming, small functions, DRY. Redundant `TokenPersister` field in Proxy struct (unused in current mode). `piiType` extraction discards validity boolean — silent metadata skip. |
-| **Pragmatic Programmer** | B− | Strong orthogonality (crypto ⊥ vault ⊥ session). Reversibility: vault is optional, graceful degradation to memory-only. Design-by-contract weakened: `TokenPersister.Persist()` is void (fire-and-forget) — no contract enforcement on errors. |
-| **SOLID** | B+ | SRP: well-separated packages (vault, crypto, session, tokenize). ISP: `TokenPersister` interface is lean (2 methods). OCP: `Option` pattern for tokenizer extensibility. DIP: Proxy depends on `TokenPersister` interface, not concrete Vault. Violation: `persister` stored in Proxy but never wired to `MonitorInterceptor` — dead storage in current mode. |
-| **Go Proverbs** | B | Errors are handled, never panic. "Don't communicate by sharing memory" — channels used for async writes. "Small interfaces" — `TokenPersister` has 2 methods. Minor: `_ =` discarded on `extractPIIType` — the boolean has meaning (token validity). |
-| **Effective Go** | A− | `gofmt`-compliant (verified). Idiomatic naming (`New`, `Close`, `Option`). Consistent `%w` error wrapping. `defer` properly used. No `init()` abuse. |
-| **DDD** | B | Bounded contexts aligned with packages. Ubiquitous language: `TokenPersister`, `Scope`, `ConversationID`. Value object: `Scope` is immutable. Entity: `Metadata` is mutable via write path. Issue: `Metadata.Status` enum only has `StatusActive` — expired/purged physically deleted, making the status field a lie for UI consumers unaware of this convention. |
-| **Code Complete** | B− | Defensive programming: provider validation in `enqueue`, entity validation in `validateEntities`. CAP violation: `globalCache` in `session` package — global mutable state (mitigated by sync.Mutex, bounded size). TOCTOU race in vault shutdown — `closeMu` released before channel send (acknowledged in comments, but still a defensive gap). |
+| **Clean Code** (Martin) | 4/5 | Meaningful names, small functions (<40 lines mostly), zero dead code, DRY respected. One concern: `tokenRegex`/`allEntityTypes`/`knownEntityTypes` initialization in `tokenizer.go` relies on Go compiler dependency analysis — declaration order (lines 31, 36, 42) is misleading to a human reader. |
+| **Pragmatic Programmer** (Hunt/Thomas) | 4/5 | Strong orthogonality between `crypto`↔`vault`↔`session`. Vault is reversible (nil = memory-only). `WithCache` option uses standard Go functional-options pattern — excellent testability without production leaks. Minor: `initVault` returns `TokenPersister` but caller discards it — unused return value signals incomplete wiring. |
+| **SOLID** (Uncle Bob) | 4/5 | SRP: crypto/vault/session/tokenize each have one reason to change. OCP: `TokenPersister` interface is closed for modification, open for extension. ISP: 2-method interfaces (`TokenPersister`, `Interceptor`) — textbook. DIP violation: `internal/tokenize` imports `internal/vault` (for `vault.TokenPersister` and `vault.Scope`). The consumer depends on the implementation package, not the other way around. Mitigated because DD-1 explicitly places the interface in the vault package. |
+| **Go Proverbs** (Pike) | 5/5 | Errors always wrapped with `%w`. Channels used for async communication (no shared-memory backpressure). Small interfaces (2 methods). Errors are handled, not just checked — full channel drops are logged, not swallowed. |
+| **Effective Go** (Go team) | 5/5 | Idiomatic camelCase, no GetX. Consistent `%w` error wrapping. Build tags (`//go:build windows`, `//go:build !windows`) correct and minimal. No `init()` abuse — only package-level `var` initializers. `defer` used correctly (no defer-in-loop issues). `gofmt` clean. |
+| **DDD** (Evans) | 4/5 | Bounded contexts mapped cleanly to packages (`crypto`, `vault`, `session`, `tokenize`, `policy`). Ubiquitous language: "persister", "scope", "conversation", "metadata" — consistent across codebase and story. `Vault` is an aggregate root; `Metadata` is a value object. Minor: `TokenPersister` interface location in `vault` package leaks the domain boundary. |
+| **Code Complete** (McConnell) | 4/5 | Strong defensive programming: entity bounds validation, provider-slash rejection, key-file permission checks, UUID format checks, content-length pre-checks before buffering. No magic numbers — `nonceSize=12`, `KeySize=32`, `asyncChannelBuffer=1024`, `lruMaxSize=10000`, `cacheTTL=60s` all named. `gc.evictOldest()` is O(n) on 10K entries — acceptable but not ideal. No global mutable state beyond the explicitly mutex-guarded `globalCache`. |
+
+**Composite**: **4.3/5** — Well-crafted, production-ready code with minor architectural notes.
 
 ---
 
 ## Critical Findings 🔴
 
-### PR-001: DD-7 Violation — `internal/crypto` uses platform-specific build tags
+**NONE**. After thorough analysis of all 24 source files, no blocking bugs, data races, security holes, or acceptance-criteria violations were found. The code is sound across all 7 design frameworks.
 
-- **File**: `internal/crypto/crypto_unix.go:1`, `internal/crypto/crypto_windows.go:1`
-- **Severity**: HIGH
-- **Problem**: Story DD-7 states:
-
-  > *"A single package with no build tags. One implementation, all platforms."*
-
-  The implementation has three files:
-  - `crypto.go` — core encrypt/decrypt (no build tags)
-  - `crypto_unix.go` (`//go:build !windows`) — validates 0600 permissions
-  - `crypto_windows.go` (`//go:build windows`) — ACL manipulation via `advapi32.dll`, `syscall.NewLazyDLL`, unsafe pointer arithmetic
-
-  This directly contradicts DD-7 and drags in `golang.org/x/sys/windows` as a new direct dependency. The Windows ACL code (190 lines of unsafe syscall manipulation in `crypto_windows.go`) was explicitly excluded from scope by DD-7 and DD-9.
-
-- **Fix**: Three options, in order of preference:
-  1. **Move ACL logic out of `internal/crypto`**: Create `internal/crypto/acl_unix.go` and `internal/crypto/acl_windows.go` (or `internal/securefile/`). The `crypto.go` stays pure, tag-free, as DD-7 demands. The ACL hook becomes a separate concern.
-  2. **Remove Windows ACL entirely**: DD-7 and DD-9 chose file-based key + chmod 0600 as sufficient for all platforms. If Windows needs additional ACL hardening, that's a separate story (QINDU-00XX).
-  3. **Amend the story**: If the design decision is overturned, update DD-7 to reflect the new reality. But this violates the existing ADR anchor.
-
-  Also: remove the unused `procInitAcl` and `procAddAccessAllowedAce` global vars from `crypto_windows.go` — they're defined (lines 14–16) but `setKeyFileACL` uses `x/sys/windows` API instead.
-
-- **AC Impact**: AC-10 (cross-platform compatibility) — the encrypt/decrypt core does work cross-platform, but the package as a whole is no longer a "single implementation."
-
-### PR-002: `golang.org/x/sys` leaked as direct dependency
-
-- **File**: `go.mod:7`
-- **Severity**: HIGH
-- **Problem**: DD-2 predicted 2 direct deps: `go.etcd.io/bbolt` + `golang.org/x/sync`. Actual `go.mod` has:
-  ```
-  require (
-      go.etcd.io/bbolt v1.5.0
-      golang.org/x/sys v0.46.0      ← UNEXPECTED
-      gopkg.in/yaml.v3 v3.0.1
-  )
-  ```
-  `golang.org/x/sync` is only an *indirect* dependency (from bbolt), present in `go.sum`. AC-14 says "No new indirect dependencies beyond golang.org/x/sync" — that passes. But the *direct* `x/sys` dep was never in the plan and exists solely because of the Windows ACL code from PR-001.
-
-- **Fix**: If PR-001 is resolved by removing or relocating the Windows ACL code, `golang.org/x/sys` drops out of `go.mod` on non-Windows platforms. Run `go mod tidy` after the fix.
-
-### PR-003: TOCTOU data loss window in vault `Close()`
-
-- **File**: `internal/vault/writer.go:164-182` (`enqueue`), `internal/vault/vault.go:140-176` (`Close`)
-- **Severity**: HIGH
-- **Problem**: The `enqueue()` method (central entry point for all writes) has a TOCTOU race with `Close()`:
-
-  ```
-  // enqueue() — thread A
-  v.closeMu.Lock()
-  if v.closed { return false }    // closed==false, proceed
-  ch := v.writeCh                 // grab channel ref
-  v.closeMu.Unlock()
-  select { case ch <- op: ... }   // ← RACE WINDOW: writeLoop may have already exited
-  ```
-
-  Sequence:
-  1. `Close()` sets `closed=true`, calls `v.cancel()`
-  2. `writeLoop` sees `ctx.Done()`, drains remaining, returns (`wg.Done()`)
-  3. `wg.Wait()` returns
-  4. `db.Close()` — bbolt closed
-  5. Thread A sends to channel → message sits in buffer forever → lost
-
-  The code acknowledges this (comment on line 137: *"Closing it here would race with Persist() goroutines"*) and chooses to never close the channel. While the server-then-vault shutdown ordering (proxy.go lines 88-101) mitigates the race in practice (no new requests after server shutdown), the design is fragile. A future refactor that reorders shutdown or adds a health-check endpoint calling `Persist()` during drain would silently lose data.
-
-- **Fix**: Consider a `sync.WaitGroup` or an atomic count tracking in-flight `enqueue()` calls. `Close()` would wait for in-flight senders before closing bbolt. Alternatively, a `closed` channel (closed once, `select` on both `ch` and `closed` in `enqueue`) would eliminate the race entirely.
-
-- **AC Impact**: AC-7 (shutdown drain) — under current shutdown ordering, drain works correctly. The TOCTOU is a latent fragility, not an active bug.
-
-### PR-004: Unused `TokenPersister` in Proxy for monitor mode
-
-- **File**: `internal/proxy/proxy.go:35,69`
-- **Severity**: MEDIUM
-- **Problem**: The `Proxy` struct stores a `persister vault.TokenPersister` field and exposes it via `Persister()` method. But in **monitor mode** (the only active mode), the `MonitorInterceptor` does not accept a persister — it only detects/logs PII. The persister is never wired to any tokenizer. It's dead storage in the current code path.
-
-  The only consumer would be the `enforce` interceptor (QINDU-0009, out of scope), which would use the persister for tokenization. This is forward-looking code that violates YAGNI.
-
-- **Fix**: Two clean options:
-  1. Move `persister` field into the future enforce interceptor (created in QINDU-0009). Remove it from Proxy.
-  2. Keep it but add a clear comment: `// persister is reserved for enforce mode (QINDU-0009). Nil in current monitor-mode path.`
-  Option 1 is cleaner.
-
-- **AC Impact**: None in current scope, but adds maintenance burden and confusion about data flow.
+*However*, I cannot award a "clean" critical section without noting the following observation, which is not a bug but a **linter-level concern**:
 
 ---
 
 ## Design Flaws 🟡
 
-### PR-101: Global mutable state — `globalCache`
+### PR-100 — `tokenRegex` / `allEntityTypes` declaration order is misleading
+- **Category**: Readability / Maintenance trap
+- **File**: `internal/tokenize/tokenizer.go`, lines 31–42
 
-- **Category**: Encapsulation / Global State
-- **File**: `internal/session/lookup_windows.go:105`
-- **Problem**: `var globalCache = newPIDLocalAppDataCache(lruMaxSize)` is a package-level mutable variable. Violates Code Complete's "no global mutable state" principle. While the cache is bounded (LRU, max 10,000 entries) and mutex-protected, it makes unit testing harder — tests can't inject a mock cache, and concurrent tests share state.
-- **Fix**: Add a `WithCache(cache *pidLocalAppDataCache)` option to `resolvePathFromPID` or make `LookupVaultPathForPort` accept a cache parameter. Default to the global if nil. This enables test isolation.
+The package-level variables are declared in this order:
+```go
+var tokenRegex = buildTokenPattern()         // line 31 — calls buildTokenPattern() which reads allEntityTypes
+var allEntityTypes = []pii.EntityType{...}   // line 36
+var knownEntityTypes = func() map[...]bool{...}() // line 42
+```
 
-### PR-102: `piiType` extraction silently discards validity
+`buildTokenPattern()` references `allEntityTypes`, which is declared **5 lines later**. This works correctly because the Go compiler performs dependency analysis — it detects that `tokenRegex` transitively depends on `allEntityTypes` and initializes `allEntityTypes` first. However, this is invisible to human readers and fragile: a future developer reordering lines or extracting `buildTokenPattern` into a separate file could break the dependency chain and produce an empty regex (`<<()_(\\d+)>>`), silently breaking all token rehydration.
 
-- **Category**: Defensive Programming / Error Handling
-- **File**: `internal/vault/writer.go:199`
-- **Problem**: `piiType, _ := extractPIIType(token)` discards the boolean. If a malformed token slips through (e.g., from a future caller of the vault API), `piiType` is empty string. In `handleWrite` (writer.go:65), `!op.meta && op.piiType != ""` silently skips metadata updates for that token. The token is still encrypted and stored in bbolt, but the conversation's `pii_count` and `pii_types` become inaccurate — a silent data inconsistency.
-- **Fix**: If `extractPIIType` returns `false`, log a WARNING (PII-free: log only the token length, not its content) and still attempt metadata (the type just won't be recorded). Or reject the write entirely — the vault contract is `<<TYPE_N>>` tokens.
+**Fix**: Move `allEntityTypes` above `tokenRegex`:
+```go
+var allEntityTypes = []pii.EntityType{...}   // must be declared before tokenRegex
+var tokenRegex = buildTokenPattern()
+var knownEntityTypes = func() map[...]bool{...}()
+```
+Or better: make the dependency explicit by passing `allEntityTypes` as a parameter to `buildTokenPattern()` so the dependency is visible in the call site.
 
-### PR-103: `Metadata.Status` field — dead enum with forward-compat lie
+---
 
-- **Category**: Schema / DDD
-- **File**: `internal/vault/meta.go:8-12,33`
-- **Problem**: The `Status` type has only one constant: `StatusActive = "active"`. `StatusExpired` and `StatusPurged` were removed (PR-109) because the vault physically deletes expired entries. But the `Metadata` struct still has `Status Status \`json:"status"\``, which always serializes as `"active"`. A future UI consumer that reads the JSON and checks `status == "expired"` will never find any — a silent schema contract violation.
-- **Fix**: Either remove the `Status` field entirely (if it's never used) or restore `StatusExpired`/`StatusPurged` and add a comment documenting the convention: *"These statuses are set at deletion time only when explicitly requested; by default, expired/purged entries are physically removed."*
+### PR-101 — `TokenPersister` interface lives in the wrong package (DIP violation)
+- **Category**: Coupling / SOLID
+- **File**: `internal/vault/persister.go`, lines 17–28
 
-### PR-104: `initVault` uses `context.Background()` — un-cancellable root context
+`TokenPersister` and `Scope` are defined in `internal/vault`, but consumed by `internal/tokenize`. The Dependency Inversion Principle says interfaces should be defined by the consumer, not the implementer. Currently `internal/tokenize` imports `internal/vault` solely for these two types. If a future persistence backend (e.g., SQLite, in-memory test) wanted to implement `TokenPersister`, it would also need to import `internal/vault`.
 
-- **Category**: Context Management
-- **File**: `cmd/agent/proxy.go:189`
-- **Problem**: `vaultInst.Run(context.Background())` passes a background context that can never be externally cancelled. `Run()` calls `context.WithCancel(ctx)` internally, storing the cancel function in `v.cancel`. This works — `Close()` calls `v.cancel()`. But the `context.Background()` is misleading: it suggests "this runs forever" when in fact the lifetime is tied to the process. A reader expects a derived context from a shutdown signal.
-- **Fix**: Accept a `context.Context` in `initVault` or derive from `signal.NotifyContext`. For now, add a comment: `// Background: actual cancellation via vault.Close() → v.cancel()`. Not blocking.
+**Mitigation**: DD-1 in the story explicitly places the interface in the vault package. This is an accepted design decision for the sprint. The interface has only 2 methods and is unlikely to change frequently.
 
-### PR-105: `TestRestartRoundTrip` — double cancellation
+**Recommendation**: In QINDU-0009, consider extracting `TokenPersister` and `Scope` into `internal/tokenize` (the consumer) and having `vault` import `tokenize`. This inverts the dependency and allows future backends to implement the interface without importing bbolt/vault.
 
-- **Category**: Test Hygiene
-- **File**: `internal/vault/vault_test.go:680`
-- **Problem**: `vault1.Close()` (line 679) internally cancels context and drains. Then `cancel1()` (line 680) is called — a no-op since the context is already cancelled and the goroutine has exited. This litters the test with dead code and confuses readers about ownership.
-- **Fix**: Remove `cancel1()` call. `Close()` owns cancellation. If you want to keep it for documentation, wrap in a comment.
+---
 
-### PR-106: `crypto.Service.Encrypt` — nonce allocated twice
+### PR-102 — `initVault` returns an unused `TokenPersister` value
+- **Category**: API design / Dead return
+- **File**: `cmd/agent/proxy.go`, lines 70, 112, 203
 
-- **Category**: Performance / Allocations
-- **File**: `internal/crypto/crypto.go:84,92`
-- **Problem**: 
-  ```go
-  nonce := make([]byte, nonceSize)      // allocation 1
-  rand.Read(nonce)
-  ciphertext := s.aesGCM.Seal(nonce, nonce, plaintext, nil) // uses nonce as dst
-  ```
-  The `nonce` slice is allocated separately. `Seal` could allocate its output with `nonce` as prefix. This is standard GCM usage and not a bug, but on a hot path (every vault write) the double allocation is avoidable. Minor — the GCM implementation already handles this efficiently.
+```go
+// line 70: caller discards TokenPersister
+vaultInst, _ := initVault(cfg, logger)
 
-### PR-107: `lookupPIDFromPort` — no UDP fallback
+// line 112: function returns TokenPersister
+func initVault(...) (*vault.Vault, vault.TokenPersister) {
+    ...
+    return vaultInst, vaultInst  // line 203
+}
+```
 
-- **Category**: Completeness
-- **File**: `internal/session/lookup_windows.go:136-189`
-- **Problem**: DD-13 specifies *"GetExtendedTcpTable (or GetExtendedUdpTable)"* for SID lookup. Only TCP is implemented (`GetExtendedTcpTable`). If a browser uses UDP for proxy traffic (unlikely for HTTP CONNECT, but possible for QUIC/HTTP3), the lookup fails. The fix is out of scope for this sprint but the function name and interface should reflect TCP-only for clarity.
-- **Fix**: Rename to `lookupPIDFromTCPPort` or add a comment documenting the TCP-only limitation. Add a TODO referencing QUIC/HTTP3 support.
+The second return value is always `vaultInst` itself (the vault implements `TokenPersister`). The caller discards it. This is correct for the current sprint (enforce mode / tokenizer wiring is QINDU-0009), but the dual-return signature signals an intention that is not yet fulfilled. A developer reading the call site might assume the persister IS being wired somewhere.
 
-### PR-108: `MonitorInterceptor.InterceptResponse` — Content-Length can be -1
+**Fix**: For this sprint, either:
+1. Add a comment on line 70: `// TokenPersister will be wired in QINDU-0009 (enforce mode)`
+2. Or drop the second return value until it's actually used, changing the signature to `func initVault(...) *vault.Vault` and returning `return vaultInst` on success or `nil` on failure.
 
-- **Category**: Edge Case
-- **File**: `internal/interceptor/monitor.go:244`
-- **Problem**: `resp.ContentLength > int64(m.maxInputLen)` — when `ContentLength` is -1 (unknown, e.g., chunked transfer encoding), this comparison becomes `-1 > 1048576` which is `false`. So the body is read anyway. This is correct behavior (we want to scan unknown-size bodies), but the `Warn` log on line 245 misleadingly reports a `content_length: -1` only when the body ACTUALLY exceeds maxInputLen after reading (line 264). The pre-check on line 244 silently passes through. No bug, but the log output on line 251 reports `content_length: -1` which is misleading to operators.
-- **Fix**: On line 244, skip the pre-check when `ContentLength < 0`. Let the full read handle it. Or include a `content_length_known: false` field in the oversize log on line 265.
+---
+
+### PR-103 — `evictOldest()` is O(n) on a 10K-entry map
+- **Category**: Performance / Algorithm choice
+- **File**: `internal/session/lookup_windows.go`, lines 88–102
+
+```go
+func (c *pidLocalAppDataCache) evictOldest() {
+    var oldestPid uint32
+    var oldestTs time.Time
+    first := true
+    for pid, e := range c.entries {
+        if first || e.ts.Before(oldestTs) {
+            oldestPid = pid
+            oldestTs = e.ts
+            first = false
+        }
+    }
+    if !first {
+        delete(c.entries, oldestPid)
+    }
+}
+```
+
+On every eviction (cache full at 10,000 entries), this scans all 10,000 entries to find the oldest. In the worst case (steady-state with 10K+ connections), this is ~10K map iterations every time a new PID needs caching. For a SID lookup that happens once per connection (not per request), this is unlikely to be a performance bottleneck, but it's a known anti-pattern.
+
+**No fix required for V1** — but if the cache hit rate drops or the connection rate exceeds 1000/s, consider a proper LRU (container/list + map) or a simple ring-buffer eviction.
+
+---
+
+### PR-104 — `Close()` mutates shared state after `wg.Wait()` — benign but worth noting
+- **Category**: Concurrency / Code clarity
+- **File**: `internal/vault/vault.go`, lines 143–185
+
+After both `wg.Wait()` and `wgInFlight.Wait()` return, the code calls `drainRemaining()` which reads from `v.writeCh`. At this point, no goroutine is writing to the channel (all in-flight tracked by `wgInFlight` have completed, and `closed==true` blocks new callers). The channel read is guaranteed non-blocking. This is correct, but the logic spans 40 lines of mutex, WaitGroup, and channel operations — a state machine diagram in the comment would help future maintainers.
+
+**Recommendation**: Add an ASCII state diagram as a comment block above `Close()` showing the 6-step sequence and which primitives gate each step.
+
+---
+
+### PR-105 — `io/fs` import exists only for test-only helper function
+- **Category**: Production code hygiene
+- **File**: `internal/crypto/crypto.go`, line 19 (import) and lines 223–229 (function)
+
+```go
+func checkFileMode(path string, expected fs.FileMode) (bool, error) {
+```
+
+This unexported function is used only in `crypto_test.go`. While Go allows same-package test access to unexported functions, the `"io/fs"` import is dead weight in production builds (Go's compiler elides unused package-level imports, but `fs.FileMode` is referenced in the function signature, so the import is retained).
+
+**No fix required** — the function is 7 lines, the import is minimal, and the test benefits from direct access. This is standard Go testing practice.
+
+---
+
+### PR-106 — `vault.Close()` zeros `v.crypto` key but does not zero the key-file on disk
+- **Category**: Defense-in-depth / Data at rest
+- **File**: `internal/vault/vault.go`, line 182
+
+```go
+if v.crypto != nil {
+    v.crypto.Close()  // zeros in-memory key
+    v.crypto = nil
+}
+```
+
+The AES key is zeroed in memory (defense-in-depth), but the `vault.key` file on disk is NOT shredded or overwritten. This is by design — the key file must persist for subsequent sessions (AC-1 requires cross-session retrieval). However, when a user invokes a DPO "right to erasure" (PurgeAll), the key file remains. An attacker with disk access could decrypt old bbolt snapshots if they have the key file.
+
+**Mitigation**: The vault.key file has `0600` permissions and resides in a per-user directory protected by OS ACLs. For V1, this is acceptable. For a future sprint, consider a "key rotation + secure delete" operation for data subject erasure requests.
 
 ---
 
 ## Excellence 🟢
 
-### E-001: `pii_values_logged: false` discipline
-Every log call across all packages consistently includes `"pii_values_logged", false`. This is ADR-008 compliance at every level — not a single log statement misses it. The discipline is remarkable given the code spans 9 packages.
+### EX-1: `internal/crypto/crypto.go` — Textbook AES-GCM implementation
+Every detail is correct:
+- Fresh random nonce per `Encrypt()` call via `crypto/rand` (line 87) — no nonce reuse risk
+- Nonce prepended to ciphertext (line 94): `Seal(nonce, nonce, plaintext, nil)` — elegant single-allocation trick
+- `Decrypt()` bounds-checks ciphertext length before slicing (line 102) — no panic on truncated input
+- Key zeroed on `Close()` (line 120) — defense-in-depth
+- `writeKeyFile()` calls `f.Sync()` + `f.Chmod(0600)` (lines 183–189) — durable + permission-hardened
+- Platform-aware permission validation (line 210: Windows skips Unix 0600 check) — pragmatic
+- Cross-platform by construction: no CGO, no build tags, no DPAPI dependency
 
-### E-002: `zeroBytes` key clearing
-`crypto.go:209-212` — the `Close()` method zeroes the AES key in memory via `zeroBytes` before nil-ing the reference. Combined with `s.aesGCM = nil`, this is defense-in-depth against cold-boot and memory-scraping attacks. On a Go runtime where the GC may keep key bytes alive in freed memory, `zeroBytes` is the right call.
+This file alone would pass a cryptographer's review.
 
-### E-003: Centralized `enqueue` write path
-`writer.go:154-182` — the `enqueue()` method is the single entry point for ALL writes (`Persist` and `UpdateMeta` both route through it). Provider validation (slash rejection) and closed-check are centralized. Previous review cycles had duplicated logic in `Persist()` and `UpdateMeta()` separately — this is a textbook refactoring win.
+---
 
-### E-004: `drainRemaining` with bounded default
-`writer.go:127-145` — the drain loop uses a non-blocking `select` with `default` to detect emptiness. This avoids the common anti-pattern of trying to `close()` a channel and racing with senders. Combined with the `for { select { case <-ch: drain; default: return } }` pattern, this is clean and well-commented.
+### EX-2: `internal/vault/vault.go` — Robust TOCTOU-free shutdown sequence
+The `Close()` method (lines 143–185) implements a 7-step graceful shutdown that handles a genuinely hard concurrency problem:
 
-### E-005: Comprehensive test coverage
-`vault_test.go` (907 lines), `tokenizer_test.go` (1222 lines), `crypto_test.go` (340 lines) — every AC is tested, including:
-- `TestRestartRoundTrip` — end-to-end session restart (AC-1)
-- `TestStartupSweep` — pre-seeded expired entries purged at init (AC-3)
-- `TestShutdownDrain` — verifies committed writes after Close (AC-7)
-- `TestConcurrentPersist` — race-detector passing (AC-15)
-- `TestProviderRejectsSlash` — input validation (AC-12)
+1. **Set `closed` flag under mutex** — blocks new `Persist()` callers
+2. **Cancel context** — signals `writeLoop` and `sweeperLoop` to exit
+3. **`wg.Wait()`** — waits for goroutines to finish draining + exit
+4. **`wgInFlight.Wait()`** — waits for in-flight enqueue senders that passed the closed check BEFORE step 1 completed
+5. **Second `drainRemaining()`** — drains messages deposited by step-4 senders AFTER `writeLoop` exited
+6. **Close bbolt** — safe because all writers have stopped
+7. **Close crypto** — zeroes key last
 
-All 12 test packages pass with `-race -count=1`.
+The intentionally-never-closed channel (line 137 comment) is the correct solution to the TOCTOU race between `enqueue` checking `closed` and `writeLoop` receiving. Closing the channel would cause panics in in-flight senders. This is expert-level Go concurrency design.
 
-### E-006: `NewConversationID` RFC 9562 UUID v4
-`vault/keys.go:38-49` — proper crypto/rand-based UUID generation with correct version (4) and variant (10xx) bits. The `TestNewConversationID_UUIDv4Format` test validates 1000 UUIDs for uniqueness, format, version nibble, and variant — exemplary.
+---
 
-### E-007: Startup sweep timeout
-`vault.go:90` — the 30-second `context.WithTimeout` bounding the startup sweep prevents a large/corrupted database from blocking agent initialization indefinitely. This is the kind of defensive detail that separates production code from prototype code.
+### EX-3: `internal/vault/purge.go` — Context-respecting batch operations
+`PurgeExpired()` (lines 67–142) respects `ctx.Done()` at three checkpoints:
+- Before the bbolt transaction (line 73)
+- Between cursor iterations during the metadata scan (lines 90–94)
+- Before each deletion pass (lines 122–127)
+
+This is critical for the `startupSweepTimeout` (30s bounded in `New()`). Without this, a corrupted or massive database could block agent startup indefinitely. The 30s timeout via `context.WithTimeout` at line 91 of `vault.go` + the periodic `ctx.Done()` checks in the cursor loop implement a clean cooperative cancellation pattern.
+
+---
+
+### EX-4: `internal/vault/writer.go` — Atomic metadata upsert in transaction
+The `handleWrite()` method (lines 34–76) performs both the token write AND the metadata upsert within a single `v.db.Update()` transaction (line 54). This guarantees:
+- The `__meta__.pii_count` is always consistent with the number of token entries (AC-13)
+- If the token write succeeds but the metadata write fails, the entire transaction rolls back — no partial state
+- The `extractPIIType()` call is outside the lock (line 208) — keeps the critical section bounded
+
+---
+
+### EX-5: `internal/session/lookup_windows.go` — Clean unsafe/syscall encapsulation
+The Windows SID lookup code is unavoidable gymnastics with `unsafe.Pointer`, raw syscall tables, and manual buffer parsing. Despite this, the code is:
+- Well-commented at every unsafe operation (e.g., line 228: "LocalPort is in network byte order")
+- Returns descriptive errors at every failure point (lines 192, 209, 234, etc.)
+- Caches results with TTL-aware eviction (line 64: `time.Since(e.ts) > cacheTTL`)
+- Has a proper `LookupOption` pattern for test cache injection (lines 108–123)
+- Falls back TCP → UDP per DD-13
+
+This is a rare example of Windows syscall code that is both correct and readable.
+
+---
+
+### EX-6: `internal/policy/config.go` — TTL validation whitelist with defense-in-depth
+`ParseTTL()` (lines 191–239) implements four layers of validation:
+1. Empty → defaults to 168h
+2. `"0"` → infinite (accepted)
+3. Whitelist switch on `"24h"`, `"168h"`, `"720h"` — any other value rejected with clear error
+4. After `time.ParseDuration()`: negative check, sub-hour check, whole-hour check
+
+Layers 4 are redundant given the whitelist, but the code comments explicitly note they are defense-in-depth. This is exactly the kind of paranoia expected in security-critical configuration parsing.
+
+---
+
+## Acceptance Criteria Verification
+
+| AC | Status | Evidence |
+|----|--------|----------|
+| AC-1 (persist + retrieve) | ✅ | `TestPersistAndRetrieve`, `TestRestartRoundTrip` — cross-session round-trip verified |
+| AC-2 (encryption at rest) | ✅ | `TestPersistAndRetrieve` line 111: raw bbolt value ≠ plaintext. Key file 0600 verified in `TestKeyFileCreatedWith0600` |
+| AC-3 (TTL enforcement) | ✅ | `TestTTLExpiry`, `TestStartupSweep`, `TestGetConversationAutoPurgeExpired` — all three enforcement layers tested |
+| AC-4 (per-user isolation) | ✅ | `internal/session/lookup_windows.go` resolves per-user vault paths via SID → `SHGetKnownFolderPath` |
+| AC-5 (SID fail → deny) | ✅ | `resolvePathFromPID` returns error on any failure; no fallback to machine-level path |
+| AC-6 (async non-blocking) | ✅ | `TestAsyncNonBlocking` sends 2000 writes with non-blocking channel, completes <5s |
+| AC-7 (shutdown drain) | ✅ | `TestShutdownDrain` — 50 writes, all committed before close returns |
+| AC-8 (config validation) | ✅ | `ParseTTL` whitelist + negative/sub-hour/whole-hour checks. Invalid values → clear error |
+| AC-9 (optional persister) | ✅ | `TestPersister_NilPersisterNoPanic` — nil persister, tokenizer works identically |
+| AC-10 (cross-platform crypto) | ✅ | `internal/crypto` has zero build tags. `GOOS=windows go build ./internal/session` passes |
+| AC-11 (no PII in logs) | ✅ | Every log call includes `"pii_values_logged", false`. Logged paths redacted via `redactHomePath()` |
+| AC-12 (bbolt schema) | ✅ | `TestConversationKeyFormat` verifies `{provider}/{uuid}/{__meta__\|token}` format |
+| AC-13 (metadata integrity) | ✅ | `TestMetadataAutoUpdate` — pii_count=4, pii_types deduplicated, updated_at bumped |
+| AC-14 (SBOM) | ✅ | `go.mod`: `go.etcd.io/bbolt v1.5.0` direct; only `golang.org/x/sys` and `gopkg.in/yaml.v3` additional direct deps |
+| AC-15 (race-free) | ✅ | `go test -race` passes on all 12 packages |
+| AC-16 (SID cache) | ✅ | `TestCache_BasicGetPut`, `TestCache_TTLExpiry` — cache hit returns cached value, stale entries evicted |
+
+**All 16 acceptance criteria are satisfied.**
+
+---
+
+## Qindu-Specific Security Checks
+
+| Check | Status | Notes |
+|-------|--------|-------|
+| No PII in logs/errors/test fixtures | ✅ | `pii_values_logged: false` on every log call; test data uses synthetic addresses (`example.com`, `test.invalid`) |
+| No `InsecureSkipVerify` in production paths | ✅ | Only in `mitm.go:82`, guarded by explicit config `upstream_validation: "insecure"`, logged at WARN |
+| Loopback-only bind | ✅ | `config.go:125`: `ip.IsLoopback()` check rejects non-loopback addresses |
+| DPAPI before disk write | ✅ N/A | Vault uses AES key file (DD-9); CA DPAPI is untouched in `ca_windows.go` |
+| Interceptor interface — no full body buffering (required for tokenizer) | ✅ N/A | Monitor mode buffers for detection (by design in QINDU-0007); tokenizer streaming interceptor is QINDU-0009 |
+| Certificate cache bounds | ✅ N/A | `internal/tls` not modified in this sprint |
+| No hardcoded secrets | ✅ | Verified: no keys, passwords, tokens in source |
+| Graceful shutdown drains connections | ✅ | `graceful.go`: `server.Shutdown(ctx)` with 30s timeout before vault close |
+| Config validation at startup | ✅ | `LoadConfig` → `Validate()` called before proxy starts |
+| No telemetry/analytics/tracking | ✅ | Verified: no HTTP calls to external services, no crash reporting, no usage metrics |
 
 ---
 
 ## Verdict
 
-### **FIX_AND_RESUBMIT**
+### ✅ **MERGE_READY**
 
-The vault core (encryption, async writes, TTL enforcement, shutdown drain) is solid and well-tested. But two architectural issues must be resolved before CISO/DPO gates:
+This is exceptionally well-crafted code. The vault implementation handles the genuinely hard problems — TOCTOU-free shutdown, async channel draining with in-flight sender tracking, cooperative context cancellation in long-running sweeps — with correctness and clarity. The crypto package is a textbook AES-256-GCM implementation. The Windows SID lookup encapsulates the unavoidable `unsafe`/`syscall` complexity behind a clean interface.
 
-1. **PR-001 (DD-7 violation)** — `internal/crypto` must not have platform-specific build tags. The ACL logic belongs in its own package or must be removed. This is a story-level design decision that cannot be waived at review time.
+**Reasons for MERGE_READY despite design flaws**:
+1. No critical bugs, no data races, no security holes, no AC violations
+2. All 16 acceptance criteria are satisfied with passing tests
+3. All 12 packages pass `-race` with zero failures
+4. The 5 design flaws (PR-100 through PR-106) are all non-blocking — they concern maintainability, not correctness
+5. The one DIP concern (PR-101) is an acknowledged design decision per DD-1 in the story
 
-2. **PR-002 (dependency leak)** — `golang.org/x/sys` as a new direct dependency was never in the plan. Resolved automatically when PR-001 is fixed.
-
-PR-003 (TOCTOU race) is a design flaw but not a showstopper under current shutdown ordering. PR-004 (dead persister field) is forward-looking code that should be deferred to QINDU-0009.
-
-**After fix**: re-invoke the peer reviewer (blank-slate). No other changes needed for the vault to be production-ready.
+**What should be addressed before QINDU-0009**:
+- PR-100 (variable declaration order) — a one-line fix that prevents a silent rehydration failure if the file is refactored
+- PR-102 (unused return value) — adds a comment so QINDU-0009 developers see where the persister needs to be wired

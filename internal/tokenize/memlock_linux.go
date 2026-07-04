@@ -31,7 +31,7 @@ func initLockedArena(logger *slog.Logger) *piiArena {
 
 	err = unix.Mlock(buf)
 	if err != nil {
-		unix.Munmap(buf)
+		_ = unix.Munmap(buf)
 		logger.Warn("memory locking failed: mlock error; token-PII mapping may be written to swap. See documentation.",
 			"error", err.Error(),
 			"pii_values_logged", false,

@@ -12,8 +12,13 @@ import (
 )
 
 // stubStore is a minimal CAStore for test that does nothing.
+// Currently unused pending future proxy tests; the linter is suppressed
+// to keep the scaffolding available for QINDU-0009 test wiring.
+//
+//nolint:unused
 type stubStore struct{}
 
+//nolint:unused
 func (s *stubStore) StoreCA(ca *qinduTls.CA) error { return nil }
 
 // testCA creates a minimal test CA for unit tests.

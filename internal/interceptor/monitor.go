@@ -38,11 +38,11 @@ func (c *combinedReadCloser) Close() error {
 // The detection engine is shared across all connections and must be concurrent-safe
 // (pii.Engine already handles this via sync.RWMutex).
 type MonitorInterceptor struct {
+	scanPaths   []string
 	engine      *pii.Engine
 	logger      *slog.Logger
 	maxInputLen int
 	piiLogging  bool
-	scanPaths   []string
 }
 
 // NewMonitorInterceptor creates a new MonitorInterceptor.
@@ -123,7 +123,7 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 	limitReader := io.LimitReader(req.Body, int64(m.maxInputLen+1))
 	bodyBytes, readErr := io.ReadAll(limitReader)
 	if readErr != nil {
-		req.Body.Close()
+		_ = req.Body.Close()
 		return nil, nil, fmt.Errorf("reading request body: %w", readErr)
 	}
 
@@ -148,7 +148,7 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 	}
 
 	// Body fits within limit — close original body since we consumed it all.
-	req.Body.Close()
+	_ = req.Body.Close()
 
 	// Run detection — engine always runs when path matches (even when pii_logging=false,
 	// because we need the result for the monitor_scan entry).
@@ -257,7 +257,7 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 		limitReader := io.LimitReader(resp.Body, int64(m.maxInputLen+1))
 		bodyBytes, readErr := io.ReadAll(limitReader)
 		if readErr != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, nil, fmt.Errorf("reading response body: %w", readErr)
 		}
 
@@ -282,7 +282,7 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 		}
 
 		// Body fits — close original since we consumed it all.
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		// Run detection — engine always runs when path matches.
 		var entities []pii.Entity
