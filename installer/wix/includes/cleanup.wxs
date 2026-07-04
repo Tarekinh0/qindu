@@ -60,21 +60,14 @@
   </Fragment>
   -->
 
-  <Fragment>
-    <!-- Unconditional: always clean INSTALLDIR on uninstall (PR-H4).
-         MSI component uninstall removes tracked files, but RemoveFolderEx
-         ensures orphaned files (crash dumps, .tmp, user-placed files) are
-         also cleaned. -->
-    <DirectoryRef Id="INSTALLDIR">
-      <Component Id="CleanupInstallDir" Guid="{F35A45E9-3E62-484D-A12D-4A5513465945}" Win64="yes">
-        <util:RemoveFolderEx Id="CleanupInstallDirEx" On="uninstall" Property="INSTALLDIR" />
-      </Component>
-    </DirectoryRef>
-  </Fragment>
+  <!--
+  FIX (HOTFIX-002): Removed CleanupInstallDir component with
+  RemoveFolderEx Property="INSTALLDIR". The WixRemoveFoldersEx custom
+  action runs BEFORE CostInitialize during uninstall, so INSTALLDIR
+  is not yet resolved, causing Error 0x80070057. This cascades to
+  set ALL component actions to Null, breaking the entire uninstall.
 
-  <Fragment>
-    <ComponentGroup Id="CleanupComponents">
-      <ComponentRef Id="CleanupInstallDir" />
-    </ComponentGroup>
-  </Fragment>
+  MSI's standard RemoveFiles action already handles tracked files
+  in INSTALLDIR. No additional RemoveFolderEx is needed.
+  -->
 </Include>

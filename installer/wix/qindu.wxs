@@ -86,7 +86,6 @@
       <ComponentGroupRef Id="ServiceComponents" />
       <ComponentGroupRef Id="RegistryChromeComponents" />
       <ComponentGroupRef Id="RegistryEdgeComponents" />
-      <ComponentGroupRef Id="CleanupComponents" />
     </Feature>
 
 
