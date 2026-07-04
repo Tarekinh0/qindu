@@ -51,6 +51,12 @@ The CI Lint job was failing with 21 errors from `errcheck`, `fieldalignment`, `s
 
 **Rationale**: `stubStore` is forward-looking test scaffolding for enforce-mode proxy tests in QINDU-0009. Removing it now would force QINDU-0009 to rediscover this pattern. The `//nolint:unused` directive keeps the scaffolding available while silencing the linter.
 
+### PR-105 — `golang.org/x/sync` not a direct dependency
+
+**File**: `go.mod`
+
+Peer review Round 6 noted that story DD-2 predicted `x/sync` as a direct dependency, but the actual `go.mod` shows `x/sys` (from `internal/session/lookup_windows.go` for SID resolution) and `x/sync` is only a transitive dependency of bbolt in `go.sum`. This is a positive finding — one fewer direct dependency. The reduction happened because bbolt v1.5.0 no longer re-exports `x/sync` in its public API. Story DD-2 was written against an earlier `go.mod` assumption; the actual SBOM is cleaner than predicted.
+
 ### PR-100 — `tokenRegex` / `allEntityTypes` declaration order
 
 **File**: `internal/tokenize/tokenizer.go`
