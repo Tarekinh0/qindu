@@ -296,7 +296,12 @@ func (r *SSEFrameReader) emitAggregatedMonitorScan() {
 	}
 	r.monitorScanEmitted = true
 
+	// Determine result before constructing args to avoid fragile index mutation (PR-101).
 	result := "clean"
+	if r.aggregatedCount > 0 {
+		result = "pii_found"
+	}
+
 	args := []any{
 		"direction", "response",
 		"result", result,
@@ -306,8 +311,6 @@ func (r *SSEFrameReader) emitAggregatedMonitorScan() {
 	}
 
 	if r.aggregatedCount > 0 {
-		result = "pii_found"
-		args[3] = result
 		args = append(args, "entity_count", r.aggregatedCount)
 		if r.piiLogging {
 			args = append(args, "entity_summary", r.aggregatedSummary)

@@ -3,6 +3,7 @@ package interceptor
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,11 +19,34 @@ func testScanPathsBroad() []string {
 	return []string{"/v1/", "/api/", "/conversation"}
 }
 
+// testDefaultScanPaths returns the production default scan paths (mirrors policy.Config defaults).
+// Used in tests that exercise the path filtering logic with production-like paths.
+func testDefaultScanPaths() []string {
+	return []string{
+		"/conversation",
+		"/v1/messages",
+		"/chat/completions",
+		"generateContent",
+		"/chat/",
+	}
+}
+
+// mustNewMonitorInterceptor is a test helper that wraps NewMonitorInterceptor
+// and fails the test if the constructor returns an error.
+func mustNewMonitorInterceptor(t *testing.T, engine *pii.Engine, piiLogging bool, logger *slog.Logger, scanPaths []string) *MonitorInterceptor {
+	t.Helper()
+	mi, err := NewMonitorInterceptor(engine, piiLogging, logger, scanPaths)
+	if err != nil {
+		t.Fatalf("NewMonitorInterceptor: %v", err)
+	}
+	return mi
+}
+
 func TestMonitorInterceptor_InterceptRequest_PIIDetected(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "test.user@example.com", "message": "hello"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -87,7 +111,7 @@ func TestMonitorInterceptor_InterceptRequest_NoPII_CleanLog(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	body := `{"message": "hello world", "topic": "weather"}`
 	req := httptest.NewRequest("POST", "/v1/chat", strings.NewReader(body))
@@ -134,7 +158,7 @@ func TestMonitorInterceptor_InterceptRequest_PIILoggingDisabled(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, false, logger, testScanPathsBroad(), nil) // pii_logging=false
+	mi := mustNewMonitorInterceptor(t, engine, false, logger, testScanPathsBroad()) // pii_logging=false
 
 	body := `{"email": "test.user@example.com"}`
 	req := httptest.NewRequest("POST", "/v1/chat", strings.NewReader(body))
@@ -181,7 +205,7 @@ func TestMonitorInterceptor_InterceptRequest_PathFilterSkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	// Telemetry path that should NOT be scanned.
 	body := `{"email": "test.user@example.com"}`
@@ -213,7 +237,7 @@ func TestMonitorInterceptor_InterceptRequest_OversizedBody(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	// Create a body larger than the engine limit.
 	bigBody := strings.Repeat("A", pii.DefaultMaxInputBytes+1000)
@@ -255,7 +279,7 @@ func TestMonitorInterceptor_InterceptRequest_ContentLengthPreCheck(t *testing.T)
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	body := `test body`
 	req := httptest.NewRequest("POST", "/v1/chat", strings.NewReader(body))
@@ -292,7 +316,7 @@ func TestMonitorInterceptor_InterceptRequest_PathSanitization(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "alice@example.com"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions?model=gpt-4&api_key=secret", strings.NewReader(body))
@@ -328,7 +352,7 @@ func TestMonitorInterceptor_InterceptRequest_LongPathTruncation(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	longPath := "/v1/" + strings.Repeat("a", 2000)
 	body := `{"email": "test@example.com"}`
@@ -358,7 +382,7 @@ func TestMonitorInterceptor_InterceptResponse_JSONWithPII(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	respBody := `{"result": "Contact +1-555-0100 for support"}`
 	resp := &http.Response{
@@ -410,7 +434,7 @@ func TestMonitorInterceptor_InterceptResponse_BinarySkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	respBody := "fake image bytes"
 	resp := &http.Response{
@@ -456,7 +480,7 @@ func TestMonitorInterceptor_InterceptResponse_MissingContentType(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	respBody := `test@example.com`
 	resp := &http.Response{
@@ -492,7 +516,7 @@ func TestMonitorInterceptor_InterceptResponse_MultipartSkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	respBody := "--boundary\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\ntest@example.com\r\n--boundary--"
 	resp := &http.Response{
@@ -530,7 +554,7 @@ func TestMonitorInterceptor_InterceptResponse_SSERouting(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	respBody := `data: {"msg": "test.user@example.com"}` + "\n\n"
 	resp := &http.Response{
@@ -583,7 +607,7 @@ func TestMonitorInterceptor_InterceptResponse_OctetStreamSkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	resp := &http.Response{
 		StatusCode: 200,
@@ -621,7 +645,7 @@ func TestMonitorInterceptor_InterceptResponse_ZeroPIIInLogs(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "test.user@example.com", "phone": "+1-555-0100", "card": "4111111111111111"}`
 	resp := &http.Response{
@@ -667,7 +691,7 @@ func TestMonitorInterceptor_InterceptRequest_NilBody(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	req.Host = "api.openai.com"
@@ -688,7 +712,7 @@ func TestMonitorInterceptor_InterceptResponse_NilBody(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	resp := &http.Response{
 		StatusCode: 200,
@@ -718,7 +742,7 @@ func TestMonitorInterceptor_InterceptResponse_ContentTypeWithParams(t *testing.T
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	body := `{"email": "test@example.com"}`
 	resp := &http.Response{
@@ -759,7 +783,7 @@ func TestMonitorInterceptor_MultipleEntityTypes(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	body := `Contact test.user@example.com or call +1-555-0100. IBAN: GB29NWBK60161331926819`
 	resp := &http.Response{
@@ -804,7 +828,7 @@ func TestMonitorInterceptor_ResponseOversize(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	bigData := strings.Repeat("x", pii.DefaultMaxInputBytes+500)
 	body := `{"data": "` + bigData + `"}`
@@ -948,7 +972,7 @@ func TestExtractSSEData(t *testing.T) {
 
 // TestShouldScanPath tests the path filtering logic.
 func TestShouldScanPath(t *testing.T) {
-	mi := NewMonitorInterceptor(newTestEngine(), false, nil, defaultScanPaths(), nil)
+	mi := mustNewMonitorInterceptor(t, newTestEngine(), false, nil, testDefaultScanPaths())
 
 	tests := []struct {
 		name string
@@ -984,7 +1008,7 @@ func TestMonitorInterceptor_ResponsePathFilterSkip(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	respBody := `{"email": "test@example.com"}`
 	resp := &http.Response{
@@ -1063,7 +1087,7 @@ func TestMonitorInterceptor_OversizeBodyWithClosingReader(t *testing.T) {
 	)
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(smallEngine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, smallEngine, true, logger, testScanPathsBroad())
 
 	// Body is 300 bytes, limit is 100. Body exceeds limit.
 	bodyStr := strings.Repeat("ABCDEFGHIJ", 30) // 300 bytes
@@ -1102,7 +1126,7 @@ func TestMonitorInterceptor_InterceptResponse_PIILoggingDisabled(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, false, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, false, logger, testScanPathsBroad())
 
 	respBody := `{"email": "test@example.com", "phone": "+1-555-0100"}`
 	resp := &http.Response{
@@ -1154,7 +1178,7 @@ func TestMonitorInterceptor_ConcurrentAccess(t *testing.T) {
 	engine := newTestEngineFull()
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(engine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, testScanPathsBroad())
 
 	const goroutines = 10
 	errs := make(chan error, goroutines*2)
@@ -1314,7 +1338,7 @@ func TestCombinedReadCloser_OversizeBodyCloseIsPropagated(t *testing.T) {
 	)
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
-	mi := NewMonitorInterceptor(smallEngine, true, logger, testScanPathsBroad(), nil)
+	mi := mustNewMonitorInterceptor(t, smallEngine, true, logger, testScanPathsBroad())
 
 	bodyStr := strings.Repeat("ABCDEFGHIJ", 30) // 300 bytes > 100 limit
 	cr := newClosingReader(bodyStr)
@@ -1382,7 +1406,7 @@ func TestMonitorInterceptor_InterceptRequest_PathFilterSubstringMatch(t *testing
 	var logBuf bytes.Buffer
 	logger := newTestLogger(&logBuf)
 	// Only scan /conversation paths.
-	mi := NewMonitorInterceptor(engine, true, logger, []string{"/conversation"}, nil)
+	mi := mustNewMonitorInterceptor(t, engine, true, logger, []string{"/conversation"})
 
 	body := `{"email": "test@example.com"}`
 	// This path contains /chat/completions but NOT /conversation.

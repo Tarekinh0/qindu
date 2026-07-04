@@ -52,7 +52,7 @@ func TestNewProxy_EnforceModeFatal(t *testing.T) {
 		},
 	}
 
-	_, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test", nil)
+	_, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
 	if err == nil {
 		t.Fatal("expected error for enforce mode, got nil")
 	}
@@ -87,7 +87,7 @@ func TestNewProxy_TransparentMode(t *testing.T) {
 		},
 	}
 
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test", nil)
+	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error for transparent mode: %v", err)
 	}
@@ -106,6 +106,9 @@ func TestNewProxy_MonitorMode(t *testing.T) {
 			ListenAddr: "127.0.0.1",
 			ListenPort: 0,
 			Mode:       "monitor",
+			Monitor: policy.MonitorConfig{
+				ScanPaths: []string{"/v1/messages", "/chat/completions"},
+			},
 		},
 		TLS: policy.TLSConfig{
 			CAName:             "Test CA",
@@ -121,7 +124,7 @@ func TestNewProxy_MonitorMode(t *testing.T) {
 		},
 	}
 
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test", nil)
+	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error for monitor mode: %v", err)
 	}
@@ -141,7 +144,7 @@ func TestNewProxy_DefaultConfigIsValid(t *testing.T) {
 	// Set log format to make it simpler.
 	cfg.Logging.Format = "text"
 
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test", nil)
+	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error for default config (monitor mode): %v", err)
 	}
@@ -161,7 +164,7 @@ func TestNewProxy_StartTimeIsSet(t *testing.T) {
 	cfg.Logging.Format = "text"
 
 	before := time.Now()
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test", nil)
+	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

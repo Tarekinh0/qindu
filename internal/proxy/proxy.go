@@ -13,7 +13,6 @@ import (
 	"github.com/Tarekinh0/qindu/internal/policy"
 	"github.com/Tarekinh0/qindu/internal/service"
 	qinduTls "github.com/Tarekinh0/qindu/internal/tls"
-	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // DialFunc is a function that establishes a TLS connection to an upstream server.
@@ -32,27 +31,22 @@ type Proxy struct {
 	rootCAs      *x509.CertPool
 	dialTLS      DialFunc
 	version      string
-	persister    vault.TokenPersister // optional vault persister for tokenizer integration (QINDU-0008)
 }
 
 // NewProxy creates a new Proxy instance.
 // Returns an error if proxy initialization fails, including when
 // an unimplemented agent.mode (e.g., "enforce") is requested.
-//
-// persister is optional (nil = memory-only mode). When non-nil, it is passed
-// through to the interceptor chain for vault-backed token persistence (QINDU-0008).
 func NewProxy(
 	cfg *policy.Config,
 	ca *qinduTls.CA,
 	certCache *qinduTls.CertCache,
 	logger *slog.Logger,
 	version string,
-	persister vault.TokenPersister,
 ) (*Proxy, error) {
 	// Select the appropriate interceptor based on configured mode.
 	// Engine creation is deferred to selectInterceptor to avoid
 	// paying for what we don't use in transparent mode (PR-100).
-	selectedInterceptor, err := selectInterceptor(cfg, logger, persister)
+	selectedInterceptor, err := selectInterceptor(cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +60,6 @@ func NewProxy(
 		logger:       logger,
 		startTime:    time.Now(),
 		version:      version,
-		persister:    persister,
 	}, nil
 }
 
@@ -76,8 +69,7 @@ func NewProxy(
 // including when "enforce" is requested before implementation (PR-001).
 // The PII detection engine is only created for monitor mode to avoid
 // paying for what we don't use in transparent mode (PR-100).
-// persister is forwarded to the interceptor for vault-backed persistence (QINDU-0008).
-func selectInterceptor(cfg *policy.Config, logger *slog.Logger, persister vault.TokenPersister) (Interceptor, error) {
+func selectInterceptor(cfg *policy.Config, logger *slog.Logger) (Interceptor, error) {
 	mode := cfg.Agent.Mode
 
 	switch mode {
@@ -106,7 +98,11 @@ func selectInterceptor(cfg *policy.Config, logger *slog.Logger, persister vault.
 			"pii_logging", cfg.Logging.PIILogging,
 		)
 		// maxInputLen is read from the engine itself — no redundant parameter (PR-102).
-		return interceptor.NewMonitorInterceptor(engine, cfg.Logging.PIILogging, logger, cfg.Agent.Monitor.ScanPaths, persister), nil
+		mi, err := interceptor.NewMonitorInterceptor(engine, cfg.Logging.PIILogging, logger, cfg.Agent.Monitor.ScanPaths)
+		if err != nil {
+			return nil, fmt.Errorf("creating monitor interceptor: %w", err)
+		}
+		return mi, nil
 
 	case "enforce":
 		// Enforce mode is not yet implemented (QINDU-0009).
@@ -122,13 +118,6 @@ func selectInterceptor(cfg *policy.Config, logger *slog.Logger, persister vault.
 		)
 		return &NoOpInterceptor{}, nil
 	}
-}
-
-// Persister returns the optional vault-backed token persister injected
-// during construction (QINDU-0008). Returns nil when the vault is not
-// configured (memory-only mode, testing).
-func (p *Proxy) Persister() vault.TokenPersister {
-	return p.persister
 }
 
 // ServeHTTP implements the http.Handler interface.

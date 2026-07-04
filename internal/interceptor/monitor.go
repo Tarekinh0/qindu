@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/Tarekinh0/qindu/internal/pii"
-	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // maxLogPathLen is the maximum length for the path field in detection logs.
@@ -22,7 +21,7 @@ const maxLogPathLen = 512
 // combinedReadCloser wraps an io.Reader and an io.Closer, delegating Read()
 // to the reader and Close() to the closer. This ensures proper resource
 // lifecycle management on the oversize-body path where a MultiReader is
-// composed with a still-open upstream body (PR-002).
+// composed with a still-open upstream body.
 type combinedReadCloser struct {
 	io.Reader
 	closer io.Closer
@@ -44,10 +43,13 @@ type MonitorInterceptor struct {
 	maxInputLen int
 	piiLogging  bool
 	scanPaths   []string
-	persister   vault.TokenPersister // optional vault-backed persistence (QINDU-0008)
 }
 
 // NewMonitorInterceptor creates a new MonitorInterceptor.
+//
+// Returns an error if scanPaths is empty to prevent silent fallback to
+// stale defaults. The caller (policy.Config.Validate) guarantees non-empty
+// scan paths in production.
 //
 // Parameters:
 //   - engine: the PII detection engine (shared instance, concurrent-safe)
@@ -55,13 +57,9 @@ type MonitorInterceptor struct {
 //   - logger: structured JSON logger for detection log output
 //   - scanPaths: list of URL path substrings to scan (case-insensitive); paths not
 //     matching this whitelist are skipped entirely
-//   - persister: optional vault-backed token persistence (nil = memory-only, QINDU-0008)
-//
-// The engine's max input size is read directly from the engine instance,
-// eliminating the redundant parameter (PR-102).
-func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Logger, scanPaths []string, persister vault.TokenPersister) *MonitorInterceptor {
+func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Logger, scanPaths []string) (*MonitorInterceptor, error) {
 	if len(scanPaths) == 0 {
-		scanPaths = defaultScanPaths()
+		return nil, fmt.Errorf("monitor: scanPaths must be non-empty — config validation guarantees this in production")
 	}
 	return &MonitorInterceptor{
 		engine:      engine,
@@ -69,19 +67,7 @@ func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Log
 		maxInputLen: engine.MaxInputLen(),
 		piiLogging:  piiLogging,
 		scanPaths:   scanPaths,
-		persister:   persister,
-	}
-}
-
-// defaultScanPaths provides the built-in fallback if none configured.
-func defaultScanPaths() []string {
-	return []string{
-		"/conversation",
-		"/v1/messages",
-		"/chat/completions",
-		"generateContent", // Gemini (matches :generateContent or /generateContent)
-		"/chat/",
-	}
+	}, nil
 }
 
 // shouldScanPath returns true if the given URL path matches any configured scan path
@@ -118,8 +104,8 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 		return req, req.Body, nil
 	}
 
-	// Content-Length pre-check before buffering (SR-1).
-	if req.ContentLength > int64(m.maxInputLen) {
+	// Content-Length pre-check before buffering (SR-1). Skip when unknown (chunked: -1).
+	if req.ContentLength >= 0 && req.ContentLength > int64(m.maxInputLen) {
 		m.logger.Warn("pii_detection_skipped",
 			"reason", "oversize",
 			"direction", "request",
@@ -153,7 +139,7 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 		)
 		// req.Body has been partially consumed (maxInputLen+1 bytes).
 		// Remaining bytes are still in req.Body. MultiReader concatenates them.
-		// Use combinedReadCloser to propagate Close() to the underlying body (PR-002).
+		// Use combinedReadCloser to propagate Close() to the underlying body.
 		combinedReader := io.MultiReader(
 			bytes.NewReader(bodyBytes),
 			req.Body,
@@ -238,7 +224,6 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 
 	case ctSSE:
 		// Create SSE frame reader for per-frame detection with aggregated logging.
-		// Use the decoupled SSE frame size limit, not the engine input limit (PR-101).
 		frameReader := newSSEFrameReader(SSEFrameReaderConfig{
 			Upstream:     resp.Body,
 			Engine:       m.engine,
@@ -255,8 +240,8 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 
 	case ctAnalyze:
 		// Analyze full body (non-streaming text/json).
-		// Content-Length pre-check (SR-1).
-		if resp.ContentLength > int64(m.maxInputLen) {
+		// Content-Length pre-check (SR-1). Skip when unknown (chunked: -1).
+		if resp.ContentLength >= 0 && resp.ContentLength > int64(m.maxInputLen) {
 			m.logger.Warn("pii_detection_skipped",
 				"reason", "oversize",
 				"direction", "response",
@@ -277,14 +262,18 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 		}
 
 		if len(bodyBytes) > m.maxInputLen {
-			m.logger.Warn("pii_detection_skipped",
+			oversizeArgs := []any{
 				"reason", "oversize",
 				"direction", "response",
 				"host", host,
 				"bytes_limit", m.maxInputLen,
 				"content_type", sanitizeContentTypeForLog(mediaType),
-			)
-			// Use combinedReadCloser to propagate Close() to the underlying body (PR-002).
+			}
+			if resp.ContentLength < 0 {
+				oversizeArgs = append(oversizeArgs, "content_length_known", false)
+			}
+			m.logger.Warn("pii_detection_skipped", oversizeArgs...)
+			// Use combinedReadCloser to propagate Close() to the underlying body.
 			combinedReader := io.MultiReader(
 				bytes.NewReader(bodyBytes),
 				resp.Body,
@@ -360,21 +349,20 @@ func (m *MonitorInterceptor) logMonitorScan(
 	statusCode int, contentType string,
 	bytesAnalyzed int,
 ) {
+	// Determine result before constructing args to avoid fragile index mutation.
 	result := "clean"
-	var args []any
+	if len(entities) > 0 {
+		result = "pii_found"
+	}
 
-	args = append(args,
+	args := []any{
 		"direction", direction,
 		"result", result,
 		"bytes_analyzed", bytesAnalyzed,
 		"pii_values_logged", false,
-	)
+	}
 
 	if len(entities) > 0 {
-		result = "pii_found"
-		// Update the result in the slice.
-		args[3] = result
-
 		args = append(args, "entity_count", len(entities))
 		if m.piiLogging {
 			// Include entity_summary when pii_logging is enabled.
@@ -474,7 +462,7 @@ func classifyContentType(mediaType string) ctAction {
 
 // sanitizeLogPath truncates the URL path to maxLogPathLen bytes (SR-3).
 // Truncation is UTF-8 safe: the cut point is at the last valid rune boundary
-// before or at maxLogPathLen (PR-007).
+// before or at maxLogPathLen.
 // The input must already be a path-only value (req.URL.Path), without query string.
 func sanitizeLogPath(path string) string {
 	if len(path) <= maxLogPathLen {
