@@ -345,3 +345,43 @@ items:
     Use case: plugins Office (Excel, PPT) avec API GPT intégrée →
     redirigés vers Open WebUI ou LiteLLM self-hosted.
     Dépend uniquement du proxy (QINDU-0001), pas du pipeline PII.
+
+# ─── Phase 6: Cross-Platform Hardening ──────────────────────────
+
+- id: QINDU-0018
+  title: "Linux hardening — safety & portability"
+  status: DRAFT
+  adr_ref: [ADR-003, ADR-008]
+  domains: [linux, crypto, hardening, packaging]
+  dependencies: [QINDU-0008]
+  gates_required: [CISO, QA, Release]
+  human_inputs_required: []
+  forbidden: [PII on disk unencrypted, CA key in plaintext, root required for install]
+  acceptance_evidence: >
+    CA key encrypted at rest (AES-256-GCM, key derived from vault key or separate).
+    CA persisted to disk (~/.local/share/qindu/ca/) with 0600 permissions.
+    CA installed in system trust store (NSS: update-ca-trust / certutil) on opt-in.
+    systemd unit file (qindu.service) with Restart=on-failure, User scope.
+    Memory locking via mlock (reuse memlock_linux.go infrastructure).
+    Packaging: .deb + .rpm via nfpm, install.sh tarball fallback.
+    Vault path: XDG_DATA_HOME (~/.local/share/qindu/vault.db).
+  notes: "Gaps identified by qindu-release during QINDU-0008 design grill. CA currently memory-only on Linux — every restart = new CA = browser trust warning. Encryption reuses AES-256-GCM from QINDU-0008 internal/crypto."
+
+- id: QINDU-0019
+  title: "macOS hardening — safety & portability"
+  status: DRAFT
+  adr_ref: [ADR-003, ADR-008]
+  domains: [macos, crypto, hardening, packaging]
+  dependencies: [QINDU-0008, QINDU-0018]
+  gates_required: [CISO, QA, Release]
+  human_inputs_required: []
+  forbidden: [Keychain pollution, PII on disk unencrypted, CA key in plaintext]
+  acceptance_evidence: >
+    Memory locking via mlock (widen memlock_linux.go build tag to linux || darwin).
+    CA key encrypted at rest (AES-256-GCM, reuse QINDU-0008 crypto).
+    CA persisted to disk (~/Library/Application Support/Qindu/ca/) with 0600.
+    CA installed in macOS Keychain (security add-trusted-cert) on opt-in.
+    launchd plist (~/Library/LaunchAgents/com.qindu.agent.plist) with KeepAlive.
+    Packaging: Homebrew formula in tap repo (brew install qindu).
+    Vault path: ~/Library/Application Support/Qindu/vault.db.
+  notes: "memlock_linux.go can trivially widen to darwin — unix.Mlock is available. CA persistence and trust store are the main gaps. Homebrew formula is a simple Ruby file in a GitHub tap."

@@ -47,13 +47,20 @@ QINDU-0012: Adapter Claude web
 QINDU-0013: Gestion historique conversations
 ```
 
-### Phase 5: Extension (Sprints QINDU-0014 → QINDU-0016)
+### Phase 5: Extension (Sprints QINDU-0014 → QINDU-0017)
 
 ```
 QINDU-0014: Adapter Gemini web
 QINDU-0015: Page d'erreur locale (fail-closed)
 QINDU-0016: Interface utilisateur locale (tray icon + fenêtre config + métriques)
 QINDU-0017: Endpoint rewriting (redirection provider → custom)
+```
+
+### Phase 6: Cross-Platform Hardening (Sprints QINDU-0018 → QINDU-0019)
+
+```
+QINDU-0018: Linux hardening — CA encryption, NSS trust, systemd, .deb/.rpm
+QINDU-0019: macOS hardening — Keychain trust, launchd, Homebrew
 ```
 
 ## Macro Dependency Chain
@@ -75,6 +82,8 @@ QINDU-0001 (Proxy)
   ├── QINDU-0015 (Fail-closed page)
   ├── QINDU-0016 (Tray icon)
   └── QINDU-0017 (Endpoint rewriting)
+  └── QINDU-0018 (Linux hardening) ← depends on QINDU-0008 (crypto extraction)
+        └── QINDU-0019 (macOS hardening) ← depends on QINDU-0018 (same patterns)
 ```
 
 ## Blockers
@@ -88,3 +97,4 @@ _None currently._
 3. **M2 - PII Ready**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles, mode monitor avec path whitelisting + per-message logging + MSI uninstall clean
 4. **M3 - MVP Privacy**: QINDU-0008 + QINDU-0009 + QINDU-0010 done → flux complet tokenisation → réhydratation
 5. **M4 - V1 Complete**: QINDU-0011 + QINDU-0012 + QINDU-0013 done → ChatGPT et Claude supportés
+6. **M5 - Multi-platform**: QINDU-0018 + QINDU-0019 done → Linux et macOS pleinement supportés avec chiffrement CA, packaging natif, trust stores
