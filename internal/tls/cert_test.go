@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -224,6 +225,11 @@ func TestGenerateLeafCert_RevocationExtensions(t *testing.T) {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
 
+	// Set CRLPath to a temp directory path so the test does not depend on
+	// C:\ProgramData existing (WIX-005 fix).
+	tmpDir := t.TempDir()
+	ca.CRLPath = filepath.Join(tmpDir, CRLFilename)
+
 	cert, err := GenerateLeafCert(ca, "chatgpt.com")
 	if err != nil {
 		t.Fatalf("GenerateLeafCert failed: %v", err)
@@ -243,7 +249,7 @@ func TestGenerateLeafCert_RevocationExtensions(t *testing.T) {
 		t.Error("leaf cert should have at least one CRL Distribution Point")
 	}
 	foundFileCRL := false
-	expectedCDP := "file:///C:/ProgramData/Qindu/" + CRLFilename
+	expectedCDP := "file:///" + filepath.ToSlash(ca.CRLPath)
 	for _, url := range cert.Leaf.CRLDistributionPoints {
 		if url == expectedCDP {
 			foundFileCRL = true
@@ -252,6 +258,52 @@ func TestGenerateLeafCert_RevocationExtensions(t *testing.T) {
 	}
 	if !foundFileCRL {
 		t.Errorf("leaf cert CRL DP should contain %q, got: %v", expectedCDP, cert.Leaf.CRLDistributionPoints)
+	}
+}
+
+// TestGenerateLeafCert_CRLDP_Fallback verifies that leaf certs use the
+// PROGRAMDATA fallback when CRLPath is empty (backward compatibility).
+// When PROGRAMDATA is set (Windows), a valid file:// CDP URL is expected.
+// When PROGRAMDATA is not set (CI/Unix), no CDP is generated (safe default).
+func TestGenerateLeafCert_CRLDP_Fallback(t *testing.T) {
+	ca, _, err := GenerateCA("Test CA", 1, nil)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	// Don't set CRLPath — test the fallback path.
+	ca.CRLPath = ""
+
+	cert, err := GenerateLeafCert(ca, "chatgpt.com")
+	if err != nil {
+		t.Fatalf("GenerateLeafCert failed: %v", err)
+	}
+
+	if cert.Leaf == nil {
+		t.Fatal("Leaf certificate field should be populated")
+	}
+
+	// When PROGRAMDATA is not set (CI/Unix), resolveCRLDP returns nil
+	// and no CDP is generated — this is the safe, expected behavior.
+	if os.Getenv("PROGRAMDATA") == "" {
+		t.Log("PROGRAMDATA not set (non-Windows environment) — skipping CDP assertion")
+		return
+	}
+
+	if len(cert.Leaf.CRLDistributionPoints) == 0 {
+		t.Error("leaf cert should have at least one CRL Distribution Point")
+	}
+
+	// Verify fallback path contains the CRL filename.
+	foundCRLFilename := false
+	for _, url := range cert.Leaf.CRLDistributionPoints {
+		if strings.Contains(url, CRLFilename) {
+			foundCRLFilename = true
+			break
+		}
+	}
+	if !foundCRLFilename {
+		t.Errorf("leaf cert CRL DP should contain %q filename, got: %v", CRLFilename, cert.Leaf.CRLDistributionPoints)
 	}
 }
 

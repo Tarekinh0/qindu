@@ -366,7 +366,7 @@ func resolvePathFromPID(pid uint32, cache *pidLocalAppDataCache) (*ResolvedUser,
 
 	// Open the process token.
 	var token windows.Token
-	err = windows.OpenProcessToken(handle, windows.TOKEN_QUERY, &token)
+	err = windows.OpenProcessToken(handle, windows.TOKEN_QUERY|0x0004, &token) // 0x0004 = TOKEN_IMPERSONATE
 	if err != nil {
 		return nil, fmt.Errorf("session: OpenProcessToken(PID=%d) failed: %w", pid, err)
 	}

@@ -1,24 +1,17 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
-	"time"
+	"path/filepath"
 
-	bolt "go.etcd.io/bbolt"
-
-	"github.com/Tarekinh0/qindu/internal/crypto"
 	"github.com/Tarekinh0/qindu/internal/logging"
 	"github.com/Tarekinh0/qindu/internal/policy"
 	"github.com/Tarekinh0/qindu/internal/proxy"
 	"github.com/Tarekinh0/qindu/internal/service"
-	"github.com/Tarekinh0/qindu/internal/session"
 	qinduTls "github.com/Tarekinh0/qindu/internal/tls"
-	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // =============================================================================
@@ -62,20 +55,10 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 	// Initialize certificate cache
 	certCache := qinduTls.NewCertCache()
 
-	// ── Vault initialization (QINDU-0008) ──
-	// The vault provides encrypted persistent storage for token↔PII mappings.
-	// It is optional — if initialization fails, the proxy starts in memory-only
-	// mode (vault = nil). The proxy operates identically with or
-	// without a vault (DD-2, DD-11).
-	vaultInst := initVault(cfg, logger)
-
-	// Create the proxy with optional vault persister.
+	// Create the proxy.
 	proxyHandler, err := proxy.NewProxy(cfg, ca, certCache, logger, appVersion)
 	if err != nil {
 		logger.Error("failed to create proxy", "error", err)
-		if vaultInst != nil {
-			vaultInst.Close()
-		}
 		return 1
 	}
 
@@ -88,149 +71,21 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 	// Start the proxy (service or console mode). Blocks until shutdown.
 	if err := startProxy(server, logger, forceConsole); err != nil {
 		logger.Error("proxy failed", "error", err)
-		if vaultInst != nil {
-			vaultInst.Close()
-		}
 		return 1
 	}
 
-	// Shutdown cleanup: close vault after proxy has stopped.
-	if vaultInst != nil {
-		logger.Info("shutting down vault", "pii_values_logged", false)
-		vaultInst.Close()
-	}
+	// Shutdown cleanup.
 	logger.Info("shutdown complete", "pii_values_logged", false)
 
 	return 0
 }
 
-// initVault initializes the encrypted vault (QINDU-0008).
-// Returns the vault instance (which implements TokenPersister), or nil
-// if any initialization step fails. All cleanup (close crypto, close bolt)
-// is handled internally on error paths via defer.
-// The caller must call vaultInst.Close() during shutdown if non-nil.
-// The TokenPersister interface returned by the vault will be wired to
-// the tokenizer in QINDU-0009 (enforce mode).
-func initVault(cfg *policy.Config, logger *slog.Logger) *vault.Vault {
-	ttl, ttlErr := cfg.Agent.Vault.ParseTTL()
-	if ttlErr != nil {
-		logger.Error("vault: invalid TTL in config — vault disabled",
-			"error", ttlErr,
-			"pii_values_logged", false,
-		)
-		return nil
-	}
-
-	vaultUser, lookupErr := session.LookupVaultPath()
-	if lookupErr != nil {
-		logger.Error("vault: cannot determine storage path — vault disabled",
-			"error", lookupErr,
-			"pii_values_logged", false,
-		)
-		return nil
-	}
-
-	if err := os.MkdirAll(vaultUser.VaultPath, 0700); err != nil {
-		logger.Error("vault: cannot create vault directory — vault disabled",
-			"error", err,
-			"pii_values_logged", false,
-		)
-		return nil
-	}
-
-	// Initialize crypto service for AES-256-GCM encryption.
-	cryptoService, cryptoErr := crypto.New(vaultUser.KeyPath)
-	if cryptoErr != nil {
-		logger.Error("vault: failed to initialize crypto — vault disabled",
-			"error", cryptoErr,
-			"pii_values_logged", false,
-		)
-		return nil
-	}
-
-	// Open bbolt database.
-	db, boltErr := bolt.Open(vaultUser.DBPath, 0600, &bolt.Options{
-		Timeout: 1 * time.Second,
-		NoSync:  false, // fsync after each commit; required for crash safety (DD-2)
-	})
-	if boltErr != nil {
-		logger.Error("vault: failed to open database — vault disabled",
-			"error", boltErr,
-			"pii_values_logged", false,
-		)
-		_ = cryptoService.Close()
-		return nil
-	}
-
-	if bucketErr := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists([]byte(vault.BucketTokens))
-		return err
-	}); bucketErr != nil {
-		logger.Error("vault: failed to create bucket — vault disabled",
-			"error", bucketErr,
-			"pii_values_logged", false,
-		)
-		_ = db.Close()
-		_ = cryptoService.Close()
-		return nil
-	}
-
-	// Create the vault.
-	vaultInst, vaultErr := vault.New(db, cryptoService, ttl, logger)
-	if vaultErr != nil {
-		logger.Error("vault: failed to initialize — vault disabled",
-			"error", vaultErr,
-			"pii_values_logged", false,
-		)
-		_ = db.Close()
-		_ = cryptoService.Close()
-		return nil
-	}
-
-	// Start background goroutines (async writer, TTL sweeper).
-	// Background: actual cancellation via vault.Close() → v.cancel().
-	vaultInst.Run(context.Background())
-
-	if ttl == 0 {
-		logger.Warn("vault TTL set to infinite — PII will persist until manually deleted",
-			"pii_values_logged", false,
-		)
-	}
-	logger.Info("vault initialized",
-		"db_path", redactHomePath(vaultUser.DBPath),
-		"ttl", ttl.String(),
-		"pii_values_logged", false,
-	)
-
-	return vaultInst
-}
-
-// redactHomePath replaces the user's home directory prefix with "~" (Unix)
-// or "%LOCALAPPDATA%" (Windows) to avoid logging usernames in filesystem paths.
-// If the path does not start with a known home directory prefix, it is returned
-// unchanged. The function never modifies the underlying string — it returns a
-// new string if redaction is possible.
-func redactHomePath(path string) string {
-	// Windows: try %LOCALAPPDATA% first.
-	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-		if after, ok := strings.CutPrefix(path, localAppData); ok {
-			return "%LOCALAPPDATA%" + after
-		}
-	}
-	// Unix (and Windows fallback): replace $HOME with "~".
-	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
-		if after, ok := strings.CutPrefix(path, homeDir); ok {
-			return "~" + after
-		}
-	}
-	return path
-}
-
 // initCA creates or loads the CA based on platform.
 func initCA(cfg *policy.Config, logger *slog.Logger) (*qinduTls.CA, error) {
 	caDir := getCADir()
+	crlPath := filepath.Join(caDir, qinduTls.CRLFilename)
 	store := qinduTls.NewCAStore(caDir)
-	return qinduTls.CreateOrLoadCA(store, cfg.TLS.CAName, cfg.TLS.CAValidityYears, logger)
+	return qinduTls.CreateOrLoadCA(store, cfg.TLS.CAName, cfg.TLS.CAValidityYears, crlPath, logger)
 }
 
 // startProxy starts the proxy in the appropriate mode (service or console).

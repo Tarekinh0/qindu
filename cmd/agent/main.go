@@ -118,6 +118,9 @@ func runCAInit(args []string) int {
 		return 1
 	}
 
+	// Set the CRL path so leaf certs use the correct CDP (WIX-005).
+	ca.CRLPath = filepath.Join(caDir, qinduTls.CRLFilename)
+
 	// Generation succeeded — now destroy the old CA before saving the new one
 	// (SR-INSTALLER-12: total replacement).
 	err = destroyExistingCA(caDir)

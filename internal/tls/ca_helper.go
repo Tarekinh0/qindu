@@ -14,13 +14,18 @@ var errNoStoredCA = errors.New("no stored CA found")
 // CreateOrLoadCA handles CA initialization: loads existing or creates new.
 // On Windows, the CA is stored encrypted via DPAPI on disk.
 // On other platforms, the CA is kept in memory only.
-func CreateOrLoadCA(store CAStore, commonName string, validityYears int, logger *slog.Logger) (*CA, error) {
+//
+// crlPath is the absolute path to the CRL file (e.g., C:\ProgramData\Qindu\ca.crl).
+// It is stored in the CA struct and used by leaf certificate generation to embed
+// a file:// CRL Distribution Point URL. If empty, no CRL DP is set.
+func CreateOrLoadCA(store CAStore, commonName string, validityYears int, crlPath string, logger *slog.Logger) (*CA, error) {
 	if !store.NeedsGeneration() {
 		logger.Info("loading existing CA from storage")
 		ca, err := store.Load()
 		if err != nil {
 			return nil, fmt.Errorf("loading existing CA: %w", err)
 		}
+		ca.CRLPath = crlPath
 		logger.Info("CA loaded successfully",
 			"subject", ca.Cert.Subject.CommonName,
 			"expires", ca.Cert.NotAfter.Format("2006-01-02"),
@@ -38,6 +43,8 @@ func CreateOrLoadCA(store CAStore, commonName string, validityYears int, logger 
 	if err != nil {
 		return nil, fmt.Errorf("generating CA: %w", err)
 	}
+
+	ca.CRLPath = crlPath
 
 	if err := store.Save(ca.CertPEM, keyPEM); err != nil {
 		return nil, fmt.Errorf("saving CA: %w", err)

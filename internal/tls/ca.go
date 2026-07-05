@@ -19,6 +19,7 @@ type CA struct {
 	Cert    *x509.Certificate
 	Key     *ecdsa.PrivateKey
 	CertPEM []byte
+	CRLPath string // absolute path to the CRL file (e.g., C:\ProgramData\Qindu\ca.crl)
 }
 
 // CAStore defines the platform-specific CA storage operations.

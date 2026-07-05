@@ -16,10 +16,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // nonceSize is the GCM standard nonce length (12 bytes / 96 bits).
@@ -192,43 +190,8 @@ func writeKeyFile(path string, key []byte) error {
 	return nil
 }
 
-// validateKeyFilePermissions checks that the key file has mode exactly 0600.
-// On Unix, this is the primary access control mechanism.
-// On Windows, %LOCALAPPDATA% already has restrictive ACLs enforced by the OS
-// (only the user + SYSTEM can access their own profile), so this check is
-// informational rather than security-critical.
-func validateKeyFilePermissions(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("crypto: failed to stat key file: %w", err)
-	}
-
-	mode := info.Mode().Perm()
-	// On Windows, os.Stat().Mode().Perm() may return 0666 or other values
-	// because Unix permission bits don't map cleanly to Windows ACLs.
-	// Only enforce 0600 on Unix platforms.
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	if mode != 0600 {
-		return fmt.Errorf("crypto: key file %s has unsafe permissions %04o, expected 0600. "+
-			"Fix with: chmod 0600 %s", path, mode, path)
-	}
-
-	return nil
-}
-
-// checkFileMode reports whether the file at path has exactly the expected permissions.
-// Used by key file permission validation tests.
-func checkFileMode(path string, expected fs.FileMode) (bool, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false, err
-	}
-	return info.Mode().Perm() == expected, nil
-}
-
 // zeroBytes overwrites b with zeros to clear sensitive material from memory.
+// Used by Close() to zero the AES key after the service shuts down.
 func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0

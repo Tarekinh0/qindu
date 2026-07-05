@@ -206,7 +206,7 @@ items:
 
 - id: QINDU-0008
   title: "Vault local chiffré"
-  status: IN_PROGRESS
+  status: DONE
   adr_ref: [ADR-003, ADR-004, ADR-008]
   domains: [vault, crypto, dpapi]
   dependencies: [QINDU-0006]

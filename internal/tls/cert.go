@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -58,6 +60,10 @@ func GenerateLeafCert(ca *CA, host string) (*tls.Certificate, error) {
 	notBefore := time.Now()
 	notAfter := notBefore.Add(24 * time.Hour)
 
+	// Resolve CRL Distribution Point path.
+	// Uses ca.CRLPath if set (WIX-005 fix), with fallback for backward compatibility.
+	crlDP := resolveCRLDP(ca)
+
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
@@ -75,12 +81,12 @@ func GenerateLeafCert(ca *CA, host string) (*tls.Certificate, error) {
 			host,
 			"*." + host,
 		},
-		// BUG-004: CRL Distribution Point pointing to the real CA-generated CRL
+		// CRL Distribution Point pointing to the real CA-generated CRL
 		// file on disk. Windows schannel reads this CRL to verify the leaf cert
 		// has not been revoked. Since the CRL is empty (no certs revoked), the
 		// check passes. This replaces the dummy http://localhost URLs which
 		// caused CRYPT_E_REVOCATION_OFFLINE (0x80092013).
-		CRLDistributionPoints: []string{"file:///C:/ProgramData/Qindu/" + CRLFilename},
+		CRLDistributionPoints: crlDP,
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.Cert, &key.PublicKey, ca.Key)
@@ -98,6 +104,30 @@ func GenerateLeafCert(ca *CA, host string) (*tls.Certificate, error) {
 		PrivateKey:  key,
 		Leaf:        cert,
 	}, nil
+}
+
+// resolveCRLDP returns the CRL Distribution Point URL for leaf certificates.
+// Uses ca.CRLPath if set (WIX-005). Falls back to %PROGRAMDATA%\Qindu\ca.crl
+// for backward compatibility with CAs created before the CRLPath field existed.
+// Returns nil if ca is nil or if the fallback path cannot be resolved
+// (e.g., PROGRAMDATA not set in CI/cross-platform tests).
+func resolveCRLDP(ca *CA) []string {
+	if ca == nil {
+		return nil
+	}
+	if ca.CRLPath != "" {
+		return []string{"file:///" + filepath.ToSlash(ca.CRLPath)}
+	}
+
+	// Backward compatibility: old CA without CRLPath set.
+	// Derive the CRL path from %PROGRAMDATA% (Windows) or return nil
+	// if the env var is unset (CI, cross-platform, misconfigured Windows).
+	pd := os.Getenv("PROGRAMDATA")
+	if pd == "" {
+		return nil
+	}
+	fallback := filepath.Join(pd, "Qindu", CRLFilename)
+	return []string{"file:///" + filepath.ToSlash(fallback)}
 }
 
 // isValidHostname performs a lightweight structural validation of a DNS hostname.
