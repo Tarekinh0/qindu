@@ -56,6 +56,12 @@ risks:
     severity: low
     status: accepted
     resolution: "DPAPI nécessite Windows. Tests manuels ou VM."
+  - id: R-009
+    title: "Adapter avant enforce — ordre non conventionnel"
+    affects: [QINDU-0011, QINDU-0009]
+    severity: low
+    status: accepted
+    resolution: "L'adapter ChatGPT (0011) doit précéder le mode enforce (0009) pour éviter les faux positifs sur tokens internes ChatGPT (JWT, hex hashes). Ordre inversé par rapport au plan initial, mais évite de construire l'enforce pipeline deux fois."
 
 # ─── Phase 1: Fondation Proxy ───────────────────────────────────────
 items:
@@ -202,7 +208,7 @@ items:
   test_count: 295
   bugs_fixed: 5
 
-# ─── Phase 3: Vault et Réhydratation ─────────────────────────────
+# ─── Phase 3: Vault ──────────────────────────────────────────────
 
 - id: QINDU-0008
   title: "Vault local chiffré"
@@ -213,20 +219,43 @@ items:
   gates_required: [DPO, CISO, QA]
   human_inputs_required: []
   forbidden: [PII in logs, vault in plaintext, cloud sync]
-  acceptance_evidence: "Vault stocke token→valeur, chiffré DPAPI, TTL configurable (24h/7j/infini). Scoped par provider et conversation. Tests chiffrement/déchiffrement."
-  notes: "Stockage: %PROGRAMDATA%\\Qindu\\vault.db (chiffré)."
+  acceptance_evidence: "Vault stocke token→valeur, chiffré AES-256-GCM, TTL configurable (24h/7j/infini). Per-user lazy creation via VaultManager. Idle eviction 30min. Token impersonation on Windows."
+  notes: "VaultManager library-only — per-connection wiring in QINDU-0009. 29 files changed, 7 gates PASS."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0008/"
+  closure_date: "2026-07-05"
+  go_version: "1.26"
+  test_count: 295
+  bugs_fixed: 5
+
+# ─── Phase 4: Enforce Pipeline ────────────────────────────────────
+# NOTE: Provider adapters (0011, 0012) come BEFORE enforce mode (0009).
+# The adapter defines which fields are user text vs metadata, so the
+# enforce pipeline can surgically tokenize only the right fields.
+# Without adapters, enforce mode blindly scans everything (noisy).
+
+- id: QINDU-0011
+  title: "Adapter ChatGPT web"
+  status: DRAFT
+  adr_ref: [ADR-002]
+  domains: [providers, chatgpt]
+  dependencies: [QINDU-0001, QINDU-0005]
+  gates_required: [QA]
+  human_inputs_required: []
+  forbidden: [hardcoded credentials]
+  acceptance_evidence: "Endpoints conversationnels ChatGPT identifiés et parsés. Champs textuels extraits pour analyse PII, autres champs ignorés. Requêtes et réponses non-streaming détournées correctement."
+  notes: "Adapter isolé dans internal/providers/chatgpt/. Premier sprint de la phase 4 — l'adapter doit exister avant le pipeline enforce pour éviter les faux positifs sur les tokens internes ChatGPT."
 
 - id: QINDU-0009
   title: "Mode Enforce + Réhydratation non-streaming"
   status: DRAFT
   adr_ref: [ADR-004]
   domains: [proxy, tokenize, vault, interceptor]
-  dependencies: [QINDU-0007, QINDU-0008]
+  dependencies: [QINDU-0007, QINDU-0008, QINDU-0011]
   gates_required: [DPO, CISO, QA]
   human_inputs_required: []
   forbidden: [PII leakage in upstream requests, PII in logs]
-  acceptance_evidence: "Mode enforce tokenise les requêtes avant envoi upstream. Réponses non-streaming réhydratées. ChatGPT fonctionnel avec un prompt contenant un email."
-  notes: "Intégration complète Interceptor PII + Tokenizer + Vault."
+  acceptance_evidence: "Mode enforce tokenise les requêtes avant envoi upstream via ChatGPT adapter. Réponses non-streaming réhydratées. ChatGPT fonctionnel avec un prompt contenant un email."
+  notes: "Intégration complète Interceptor PII + Tokenizer + Vault + ChatGPT adapter. Premier sprint où le PII est effectivement bloqué — le demo milestone."
 
 - id: QINDU-0010
   title: "Réhydratation streaming (SSE)"
@@ -238,21 +267,7 @@ items:
   human_inputs_required: []
   forbidden: [buffering complet réponse, PII in logs]
   acceptance_evidence: "Réponses SSE avec tokens coupés entre chunks sont correctement réhydratées. Buffer glissant < 4KB. Latence minimale préservée."
-  notes: "Dernière pièce critique du flux PII. Gère tokens partiels et modifiés."
-
-# ─── Phase 4: Providers ───────────────────────────────────────────
-
-- id: QINDU-0011
-  title: "Adapter ChatGPT web"
-  status: DRAFT
-  adr_ref: [ADR-002]
-  domains: [providers, chatgpt]
-  dependencies: [QINDU-0010]
-  gates_required: [QA]
-  human_inputs_required: []
-  forbidden: [hardcoded credentials]
-  acceptance_evidence: "Endpoints conversationnels ChatGPT identifiés et parsés. Champs textuels extraits pour analyse PII, autres champs ignorés. Streaming SSE supporté."
-  notes: "Adapter isolé dans internal/providers/chatgpt/."
+  notes: "Réutilise le parsing SSE frame-by-frame de QINDU-0007. Ajoute seulement le sliding buffer pour tokens fragmentés entre chunks."
 
 - id: QINDU-0012
   title: "Adapter Claude web"
@@ -264,7 +279,7 @@ items:
   human_inputs_required: []
   forbidden: [hardcoded credentials]
   acceptance_evidence: "Endpoints conversationnels Claude identifiés et parsés. Fonctionne en streaming et non-streaming."
-  notes: "Adapter isolé dans internal/providers/claude/."
+  notes: "Adapter isolé dans internal/providers/claude/. Même pattern que ChatGPT adapter."
 
 - id: QINDU-0013
   title: "Gestion historique conversations"
@@ -305,24 +320,38 @@ items:
   notes: "Optionnel pour la V1 open-source."
 
 - id: QINDU-0016
-  title: "Interface utilisateur locale (tray icon + fenêtre de config)"
+  title: "Tray icon Windows"
   status: DRAFT
   adr_ref: [ADR-005, ADR-008]
-  domains: [ux, config, metrics]
-  dependencies: [QINDU-0002, QINDU-0007, QINDU-0017]
+  domains: [ux]
+  dependencies: [QINDU-0002, QINDU-0007]
+  gates_required: [DPO, QA]
+  human_inputs_required: []
+  forbidden: [telemetry, tracking, internet access]
+  acceptance_evidence: >
+    Tray icon Windows avec menu contextuel (activer/désactiver proxy, quitter).
+    Indicateur d'état visuel (proxy ON/OFF).
+    Zéro telemetry, zéro appel réseau sortant.
+  notes: "Tray icon uniquement. Fenêtre de configuration → QINDU-0020. Split pour éviter un sprint fourre-tout."
+
+- id: QINDU-0020
+  title: "Fenêtre de configuration + métriques"
+  status: DRAFT
+  adr_ref: [ADR-005, ADR-008]
+  domains: [ux, config, metrics, vault]
+  dependencies: [QINDU-0009, QINDU-0016, QINDU-0017]
   gates_required: [DPO, QA]
   human_inputs_required: ["design UX (maquette fenêtre de config)"]
   forbidden: [telemetry, tracking, internet access, PII affiché en clair]
   acceptance_evidence: >
-    Tray icon Windows avec menu contextuel (activer/désactiver proxy, quitter).
-    Double-clic → fenêtre de configuration native (Win32/Go, type walk ou shiny).
+    Double-clic tray icon → fenêtre de configuration native Win32.
     Onglet "Proxy" : toggle tokenisation (monitor/enforce/off),
     toggle redirection endpoints (QINDU-0017).
     Onglet "Métriques" : PII détectées, tokens créés, requêtes redirigées,
     uptime, bytes in/out — alimenté par endpoint /metrics (JSON, PII-free).
     Onglet "Vault" : statut (actif/expiré), purge manuelle.
     Zéro telemetry, zéro appel réseau sortant.
-  notes: "Fenêtre native Win32. Backend: nouveau endpoint /metrics exposant les compteurs internes sans PII. Priorité remontée suite à QINDU-0017."
+  notes: "Backend: nouveau endpoint /metrics exposant les compteurs internes sans PII."
 
 - id: QINDU-0017
   title: "Endpoint rewriting — Redirection provider vers endpoint custom"
@@ -349,23 +378,35 @@ items:
 # ─── Phase 6: Cross-Platform Hardening ──────────────────────────
 
 - id: QINDU-0018
-  title: "Linux hardening — safety & portability"
+  title: "Linux hardening — crypto & safety"
   status: DRAFT
   adr_ref: [ADR-003, ADR-008]
-  domains: [linux, crypto, hardening, packaging]
+  domains: [linux, crypto, hardening]
   dependencies: [QINDU-0008]
-  gates_required: [CISO, QA, Release]
+  gates_required: [CISO, QA]
   human_inputs_required: []
   forbidden: [PII on disk unencrypted, CA key in plaintext, root required for install]
   acceptance_evidence: >
     CA key encrypted at rest (AES-256-GCM, key derived from vault key or separate).
     CA persisted to disk (~/.local/share/qindu/ca/) with 0600 permissions.
     CA installed in system trust store (NSS: update-ca-trust / certutil) on opt-in.
-    systemd unit file (qindu.service) with Restart=on-failure, User scope.
     Memory locking via mlock (reuse memlock_linux.go infrastructure).
-    Packaging: .deb + .rpm via nfpm, install.sh tarball fallback.
     Vault path: XDG_DATA_HOME (~/.local/share/qindu/vault.db).
-  notes: "Gaps identified by qindu-release during QINDU-0008 design grill. CA currently memory-only on Linux — every restart = new CA = browser trust warning. Encryption reuses AES-256-GCM from QINDU-0008 internal/crypto."
+  notes: "Core crypto/hardening uniquement. Packaging → QINDU-0021. Split pour éviter un sprint fourre-tout."
+
+- id: QINDU-0021
+  title: "Linux packaging — systemd + .deb/.rpm"
+  status: DRAFT
+  adr_ref: [ADR-008]
+  domains: [linux, packaging]
+  dependencies: [QINDU-0018]
+  gates_required: [QA, Release]
+  human_inputs_required: []
+  forbidden: [root required for install]
+  acceptance_evidence: >
+    systemd unit file (qindu.service) with Restart=on-failure, User scope.
+    Packaging: .deb + .rpm via nfpm, install.sh tarball fallback.
+  notes: "Packaging isolé du hardening pour itérations plus rapides."
 
 - id: QINDU-0019
   title: "macOS hardening — safety & portability"
