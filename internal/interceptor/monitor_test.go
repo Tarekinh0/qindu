@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/Tarekinh0/qindu/internal/pii"
+	"github.com/Tarekinh0/qindu/internal/testutils"
 )
 
 // testScanPathsBroad returns scan paths that match all standard test URL paths.
@@ -65,7 +65,7 @@ func TestMonitorInterceptor_InterceptRequest_PIIDetected(t *testing.T) {
 	}
 
 	// Check log output.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -129,7 +129,7 @@ func TestMonitorInterceptor_InterceptRequest_NoPII_CleanLog(t *testing.T) {
 	}
 
 	// Should have exactly one monitor_scan entry with result=clean.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -177,7 +177,7 @@ func TestMonitorInterceptor_InterceptRequest_PIILoggingDisabled(t *testing.T) {
 	}
 
 	// Should have a monitor_scan entry with result=pii_found but NO entity_summary.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -224,7 +224,7 @@ func TestMonitorInterceptor_InterceptRequest_PathFilterSkip(t *testing.T) {
 	}
 
 	// No monitor_scan or pii_detected entries should appear.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		msg, _ := e["msg"].(string)
 		if msg == "monitor_scan" || msg == "pii_detected" {
@@ -261,7 +261,7 @@ func TestMonitorInterceptor_InterceptRequest_OversizedBody(t *testing.T) {
 	}
 
 	// Should have a WARN log for oversize skip.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	hasSkipWarn := false
 	for _, e := range entries {
 		if e["msg"] == "pii_detection_skipped" && e["reason"] == "oversize" {
@@ -297,7 +297,7 @@ func TestMonitorInterceptor_InterceptRequest_ContentLengthPreCheck(t *testing.T)
 		t.Errorf("body must pass through: got %q, want %q", string(returnedBytes), body)
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	hasSkipWarn := false
 	for _, e := range entries {
 		if e["msg"] == "pii_detection_skipped" && e["reason"] == "oversize" {
@@ -332,7 +332,7 @@ func TestMonitorInterceptor_InterceptRequest_PathSanitization(t *testing.T) {
 	defer func() { _ = newBody.Close() }()
 	_, _ = io.ReadAll(newBody)
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			if path, ok := e["path"].(string); ok {
@@ -366,7 +366,7 @@ func TestMonitorInterceptor_InterceptRequest_LongPathTruncation(t *testing.T) {
 	defer func() { _ = newBody.Close() }()
 	_, _ = io.ReadAll(newBody)
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			if path, ok := e["path"].(string); ok {
@@ -393,7 +393,7 @@ func TestMonitorInterceptor_InterceptResponse_JSONWithPII(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat/completions"),
+			URL:  testutils.MustParseURL("/v1/chat/completions"),
 		},
 	}
 
@@ -408,7 +408,7 @@ func TestMonitorInterceptor_InterceptResponse_JSONWithPII(t *testing.T) {
 		t.Errorf("response body not byte-identical.\n got: %q\nwant: %q", string(returnedBytes), respBody)
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -445,7 +445,7 @@ func TestMonitorInterceptor_InterceptResponse_BinarySkip(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -460,7 +460,7 @@ func TestMonitorInterceptor_InterceptResponse_BinarySkip(t *testing.T) {
 		t.Error("binary body must be forwarded unchanged")
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	// Should have a DEBUG log for skip reason.
 	hasDebugSkip := false
 	for _, e := range entries {
@@ -489,7 +489,7 @@ func TestMonitorInterceptor_InterceptResponse_MissingContentType(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -504,7 +504,7 @@ func TestMonitorInterceptor_InterceptResponse_MissingContentType(t *testing.T) {
 		t.Error("body must be forwarded")
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			t.Errorf("should not detect PII when Content-Type is missing: %v", e)
@@ -527,7 +527,7 @@ func TestMonitorInterceptor_InterceptResponse_MultipartSkip(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -542,7 +542,7 @@ func TestMonitorInterceptor_InterceptResponse_MultipartSkip(t *testing.T) {
 		t.Error("multipart body must be forwarded unchanged")
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			t.Errorf("should not detect PII in multipart: %v", e)
@@ -565,7 +565,7 @@ func TestMonitorInterceptor_InterceptResponse_SSERouting(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -580,7 +580,7 @@ func TestMonitorInterceptor_InterceptResponse_SSERouting(t *testing.T) {
 		t.Errorf("SSE body must be forwarded byte-identical.\n got: %q\nwant: %q", string(returnedBytes), respBody)
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -617,7 +617,7 @@ func TestMonitorInterceptor_InterceptResponse_OctetStreamSkip(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader("binary stuff")),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -632,7 +632,7 @@ func TestMonitorInterceptor_InterceptResponse_OctetStreamSkip(t *testing.T) {
 		t.Error("octet-stream body must be forwarded unchanged")
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			t.Errorf("should not detect PII in octet-stream: %v", e)
@@ -656,7 +656,7 @@ func TestMonitorInterceptor_InterceptResponse_ZeroPIIInLogs(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(body)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -722,7 +722,7 @@ func TestMonitorInterceptor_InterceptResponse_NilBody(t *testing.T) {
 		Body: nil,
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -753,7 +753,7 @@ func TestMonitorInterceptor_InterceptResponse_ContentTypeWithParams(t *testing.T
 		Body: io.NopCloser(strings.NewReader(body)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -764,7 +764,7 @@ func TestMonitorInterceptor_InterceptResponse_ContentTypeWithParams(t *testing.T
 	defer func() { _ = newBody.Close() }()
 	_, _ = io.ReadAll(newBody)
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			if ct, ok := e["content_type"].(string); ok {
@@ -794,7 +794,7 @@ func TestMonitorInterceptor_MultipleEntityTypes(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(body)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -805,7 +805,7 @@ func TestMonitorInterceptor_MultipleEntityTypes(t *testing.T) {
 	defer func() { _ = newBody.Close() }()
 	_, _ = io.ReadAll(newBody)
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			ec, _ := e["entity_count"].(float64)
@@ -840,7 +840,7 @@ func TestMonitorInterceptor_ResponseOversize(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(body)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -1019,7 +1019,7 @@ func TestMonitorInterceptor_ResponsePathFilterSkip(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/ces/statsc/flush"),
+			URL:  testutils.MustParseURL("/ces/statsc/flush"),
 		},
 	}
 
@@ -1035,21 +1035,12 @@ func TestMonitorInterceptor_ResponsePathFilterSkip(t *testing.T) {
 	}
 
 	// No monitor_scan entries for skipped path.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			t.Errorf("unexpected monitor_scan for skipped response path: %v", e)
 		}
 	}
-}
-
-// mustParseURL parses a URL and panics on error (for test setup only).
-func mustParseURL(rawURL string) *url.URL {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		panic(err)
-	}
-	return u
 }
 
 // --- New tests from Fix Round 1 (per peer review FR-1, FR-2, FR-6) ---
@@ -1137,7 +1128,7 @@ func TestMonitorInterceptor_InterceptResponse_PIILoggingDisabled(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(respBody)),
 		Request: &http.Request{
 			Host: "api.openai.com",
-			URL:  mustParseURL("/v1/chat"),
+			URL:  testutils.MustParseURL("/v1/chat"),
 		},
 	}
 
@@ -1150,7 +1141,7 @@ func TestMonitorInterceptor_InterceptResponse_PIILoggingDisabled(t *testing.T) {
 
 	// Body must still be forwarded.
 	// Should have monitor_scan with result=pii_found, entity_count, but NO entity_summary.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -1421,7 +1412,7 @@ func TestMonitorInterceptor_InterceptRequest_PathFilterSubstringMatch(t *testing
 	_, _ = io.ReadAll(newBody)
 
 	// Should be skipped — no monitor_scan.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
 			t.Errorf("unexpected monitor_scan for non-conversation path: %v", e)

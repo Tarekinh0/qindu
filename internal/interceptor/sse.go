@@ -53,43 +53,48 @@ type SSEFrameReaderConfig struct {
 //   - On stream end (io.EOF or data: [DONE]), a single monitor_scan entry is emitted
 //   - This replaces the old per-frame pii_detected entries
 type SSEFrameReader struct {
-	frameStartTime     time.Time
+	acc *sseFrameAccumulator // shared frame accumulator (PR-101)
+
 	upstream           io.ReadCloser
 	aggregatedSummary  map[string]int
 	engine             *pii.Engine
 	logger             *slog.Logger
-	br                 *bufio.Reader
 	host               string
 	method             string
 	path               string
 	contentType        string
-	frameBuf           bytes.Buffer
-	maxFrameSize       int
-	frameTimeout       time.Duration
 	statusCode         int
 	aggregatedCount    int
 	totalBytesAnalyzed int
 	piiLogging         bool
-	hasFrameData       bool
 	monitorScanEmitted bool
 	doneMarkerSeen     bool
 }
 
 // newSSEFrameReader creates a new SSE frame reader from a configuration struct (PR-102).
 func newSSEFrameReader(cfg SSEFrameReaderConfig) *SSEFrameReader {
+	maxSize := cfg.MaxFrameSize
+	if maxSize <= 0 {
+		maxSize = DefaultMaxSSEFrameSize
+	}
+	br := bufio.NewReader(cfg.Upstream)
 	return &SSEFrameReader{
+		acc: &sseFrameAccumulator{
+			br:      br,
+			maxSize: maxSize,
+			timeout: defaultFrameTimeout,
+			logger:  cfg.Logger,
+			host:    cfg.Host,
+		},
 		upstream:          cfg.Upstream,
 		engine:            cfg.Engine,
 		logger:            cfg.Logger,
 		piiLogging:        cfg.PIILogging,
-		maxFrameSize:      cfg.MaxFrameSize,
-		frameTimeout:      defaultFrameTimeout,
 		host:              cfg.Host,
 		method:            cfg.Method,
 		path:              cfg.Path,
 		contentType:       cfg.ContentType,
 		statusCode:        cfg.StatusCode,
-		br:                bufio.NewReader(cfg.Upstream),
 		aggregatedSummary: make(map[string]int),
 	}
 }
@@ -101,109 +106,30 @@ func newSSEFrameReader(cfg SSEFrameReaderConfig) *SSEFrameReader {
 // On frame boundary, detection runs synchronously on the accumulated frame content
 // (after the bytes have been returned to the caller for forwarding).
 func (r *SSEFrameReader) Read(p []byte) (int, error) {
-	n, err := r.br.Read(p)
+	n, err := r.acc.readFrames(p, func(rawFrame []byte) {
+		// Copy frame data since detectFrame may be called asynchronously.
+		frameData := make([]byte, len(rawFrame))
+		copy(frameData, rawFrame)
 
-	if n > 0 {
-		// Start frame timer if this is the first data for a new frame.
-		if !r.hasFrameData {
-			r.frameStartTime = time.Now()
-			r.hasFrameData = true
+		r.detectFrame(frameData)
+
+		if r.doneMarkerSeen && !r.monitorScanEmitted {
+			r.emitAggregatedMonitorScan()
 		}
-
-		// Append to frame accumulator.
-		written, writeErr := r.frameBuf.Write(p[:n])
-		if writeErr != nil || written != n {
-			r.logger.Warn("pii_detection_skipped",
-				"reason", "sse_frame_buffer_error",
-				"direction", "response",
-				"host", r.host,
-				"sse_frame", true,
-			)
-			r.frameBuf.Reset()
-			r.hasFrameData = false
-			return n, err
-		}
-
-		// Check frame size limit (SR-7).
-		if r.frameBuf.Len() > r.maxFrameSize {
-			r.logger.Warn("pii_detection_skipped",
-				"reason", "sse_frame_oversize",
-				"direction", "response",
-				"host", r.host,
-				"bytes_received", r.frameBuf.Len(),
-				"bytes_limit", r.maxFrameSize,
-				"sse_frame", true,
-			)
-			r.frameBuf.Reset()
-			r.hasFrameData = false
-			return n, err
-		}
-
-		// Check for frame boundary.
-		// Process ALL complete frames, not just the last one.
-		content := r.frameBuf.Bytes()
-		frameEnd := 0
-		for {
-			idx, boundaryLen := nextFrameBoundary(content[frameEnd:])
-			if idx < 0 {
-				break
-			}
-			frameStart := frameEnd
-			frameEnd += idx + boundaryLen
-
-			// Extract complete frame.
-			frameData := make([]byte, frameEnd-frameStart)
-			copy(frameData, content[frameStart:frameEnd])
-
-			// Run detection on the frame content.
-			r.detectFrame(frameData)
-
-			// If [DONE] marker was seen, emit aggregated log now.
-			if r.doneMarkerSeen && !r.monitorScanEmitted {
-				r.emitAggregatedMonitorScan()
-			}
-		}
-
-		// Remove processed frames from buffer, keeping any remainder.
-		if frameEnd > 0 {
-			remaining := content[frameEnd:]
-			r.frameBuf.Reset()
-			if len(remaining) > 0 {
-				r.frameBuf.Write(remaining)
-				r.hasFrameData = true
-			} else {
-				r.hasFrameData = false
-			}
-		} else {
-			// No frame boundary found — check timeout (SR-7).
-			if r.hasFrameData && time.Since(r.frameStartTime) > r.frameTimeout {
-				r.logger.Warn("pii_detection_skipped",
-					"reason", "sse_frame_timeout",
-					"direction", "response",
-					"host", r.host,
-					"bytes_received", r.frameBuf.Len(),
-					"timeout_seconds", int(r.frameTimeout.Seconds()),
-					"sse_frame", true,
-				)
-				r.frameBuf.Reset()
-				r.hasFrameData = false
-			}
-		}
-	}
+	})
 
 	// On EOF, flush any remaining partial frame data (DPO-R6: no detection on partial).
 	// Then emit the aggregated monitor_scan entry for the entire stream (Bug 2 fix).
 	if err == io.EOF && !r.monitorScanEmitted {
-		if r.frameBuf.Len() > 0 {
+		if r.acc.remainingBytes() > 0 {
 			r.logger.Debug("pii_detection_skipped",
 				"reason", "sse_partial_frame_on_close",
 				"direction", "response",
 				"host", r.host,
-				"bytes_remaining", r.frameBuf.Len(),
+				"bytes_remaining", r.acc.remainingBytes(),
 				"sse_frame", true,
 			)
-			r.frameBuf.Reset()
-			r.hasFrameData = false
+			r.acc.reset()
 		}
 
 		// Emit the aggregated monitor_scan entry for the entire SSE stream.
@@ -215,8 +141,7 @@ func (r *SSEFrameReader) Read(p []byte) (int, error) {
 
 // Close closes the underlying upstream reader.
 func (r *SSEFrameReader) Close() error {
-	r.frameBuf.Reset()
-	r.hasFrameData = false
+	r.acc.reset()
 	return r.upstream.Close()
 }
 
@@ -286,44 +211,25 @@ func (r *SSEFrameReader) emitAggregatedMonitorScan() {
 	}
 	r.monitorScanEmitted = true
 
-	// Determine result before constructing args to avoid fragile index mutation (PR-101).
 	result := "clean"
 	if r.aggregatedCount > 0 {
 		result = "pii_found"
 	}
 
-	args := []any{
-		"direction", "response",
-		"result", result,
-		"bytes_analyzed", r.totalBytesAnalyzed,
-		"pii_values_logged", false,
-		"sse_frame", true,
-	}
-
-	if r.aggregatedCount > 0 {
-		args = append(args, "entity_count", r.aggregatedCount)
-		if r.piiLogging {
-			args = append(args, "entity_summary", r.aggregatedSummary)
-		}
-	}
-
-	if r.host != "" {
-		args = append(args, "host", r.host)
-	}
-	if r.method != "" {
-		args = append(args, "method", r.method)
-	}
-	if r.path != "" {
-		args = append(args, "path", r.path)
-	}
-	if r.statusCode > 0 {
-		args = append(args, "status_code", r.statusCode)
-	}
-	if r.contentType != "" {
-		args = append(args, "content_type", r.contentType)
-	}
-
-	r.logger.Info("monitor_scan", args...)
+	emitMonitorScan(r.logger, MonitorScanArgs{
+		Direction:     "response",
+		Result:        result,
+		BytesAnalyzed: r.totalBytesAnalyzed,
+		EntityCount:   r.aggregatedCount,
+		EntitySummary: r.aggregatedSummary,
+		PIILogging:    r.piiLogging,
+		SSEFrame:      true,
+		Host:          r.host,
+		Method:        r.method,
+		Path:          r.path,
+		StatusCode:    r.statusCode,
+		ContentType:   r.contentType,
+	})
 }
 
 // extractSSEData parses SSE frame content and extracts text from data: lines.
@@ -380,4 +286,132 @@ func nextFrameBoundary(data []byte) (int, int) {
 	}
 
 	return -1, 0
+}
+
+// sseFrameAccumulator provides shared SSE frame accumulation and boundary
+// detection logic used by both SSEFrameReader (monitor mode) and
+// ProviderSSEReader (provider mode). Extracted to eliminate ~90% duplication
+// between the two Read implementations (PR-101).
+type sseFrameAccumulator struct {
+	br  *bufio.Reader
+	buf bytes.Buffer // bytes.Buffer (not strings.Builder) — operates on raw bytes for SSE boundary
+	// detection via nextFrameBoundary, which searches byte sequences (\n\n, \r\n\r\n).
+	// strings.Builder would require string conversions for every boundary scan.
+	maxSize   int
+	timeout   time.Duration
+	startTime time.Time
+	hasData   bool
+	logger    *slog.Logger
+	host      string
+	extra     []any // additional log attributes (e.g., "provider", "plugin_name")
+}
+
+// readFrames reads bytes from the upstream bufio.Reader, accumulates them into
+// an internal buffer, detects complete SSE frames via frame boundaries, and
+// calls onFrame for each complete frame. Handles oversize checks, timeout
+// detection, and buffer trimming. The caller is responsible for EOF handling.
+//
+// Returns the raw n,err from the underlying bufio.Reader.Read.
+func (a *sseFrameAccumulator) readFrames(p []byte, onFrame func(rawFrame []byte)) (int, error) {
+	n, err := a.br.Read(p)
+
+	if n > 0 {
+		// Start frame timer if this is the first data for a new frame.
+		if !a.hasData {
+			a.startTime = time.Now()
+			a.hasData = true
+		}
+
+		// Append to frame accumulator.
+		written, writeErr := a.buf.Write(p[:n])
+		if writeErr != nil || written != n {
+			args := []any{
+				"reason", "sse_frame_buffer_error",
+				"direction", "response",
+				"host", a.host,
+				"sse_frame", true,
+			}
+			args = append(args, a.extra...)
+			a.logger.Warn("pii_detection_skipped", args...)
+			a.buf.Reset()
+			a.hasData = false
+			return n, err
+		}
+
+		// Check frame size limit.
+		if a.buf.Len() > a.maxSize {
+			args := []any{
+				"reason", "sse_frame_oversize",
+				"direction", "response",
+				"host", a.host,
+				"bytes_received", a.buf.Len(),
+				"bytes_limit", a.maxSize,
+				"sse_frame", true,
+			}
+			args = append(args, a.extra...)
+			a.logger.Warn("pii_detection_skipped", args...)
+			a.buf.Reset()
+			a.hasData = false
+			return n, err
+		}
+
+		// Check for frame boundaries — process ALL complete frames.
+		content := a.buf.Bytes()
+		frameEnd := 0
+		for {
+			idx, boundaryLen := nextFrameBoundary(content[frameEnd:])
+			if idx < 0 {
+				break
+			}
+			frameStart := frameEnd
+			frameEnd += idx + boundaryLen
+
+			// Extract complete frame.
+			frameData := content[frameStart:frameEnd]
+
+			// Process frame through the caller's callback.
+			onFrame(frameData)
+		}
+
+		// Remove processed frames from buffer, keeping any remainder.
+		if frameEnd > 0 {
+			remaining := content[frameEnd:]
+			a.buf.Reset()
+			if len(remaining) > 0 {
+				a.buf.Write(remaining)
+				a.hasData = true
+			} else {
+				a.hasData = false
+			}
+		} else {
+			// No frame boundary found — check timeout.
+			if a.hasData && time.Since(a.startTime) > a.timeout {
+				args := []any{
+					"reason", "sse_frame_timeout",
+					"direction", "response",
+					"host", a.host,
+					"bytes_received", a.buf.Len(),
+					"timeout_seconds", int(a.timeout.Seconds()),
+					"sse_frame", true,
+				}
+				args = append(args, a.extra...)
+				a.logger.Warn("pii_detection_skipped", args...)
+				a.buf.Reset()
+				a.hasData = false
+			}
+		}
+	}
+
+	return n, err
+}
+
+// remainingBytes returns any bytes currently in the accumulator buffer.
+func (a *sseFrameAccumulator) remainingBytes() int {
+	return a.buf.Len()
+}
+
+// reset clears the accumulator buffer.
+func (a *sseFrameAccumulator) reset() {
+	a.buf.Reset()
+	a.hasData = false
 }

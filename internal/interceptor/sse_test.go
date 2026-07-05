@@ -2,7 +2,6 @@ package interceptor
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Tarekinh0/qindu/internal/pii"
+	"github.com/Tarekinh0/qindu/internal/testutils"
 )
 
 // newTestEngine creates a minimal engine with email and phone recognizers for tests.
@@ -38,26 +38,6 @@ func newTestEngineFull() *pii.Engine {
 // newTestLogger creates a logger that writes to a buffer for test assertions.
 func newTestLogger(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-// parseLogEntries extracts all JSON log entries from the buffer.
-func parseLogEntries(t *testing.T, buf *bytes.Buffer) []map[string]any {
-	t.Helper()
-
-	var entries []map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(buf.Bytes()))
-	for {
-		var entry map[string]any
-		if err := decoder.Decode(&entry); err != nil {
-			if err == io.EOF {
-				break
-			}
-			// Skip partially written lines.
-			break
-		}
-		entries = append(entries, entry)
-	}
-	return entries
 }
 
 func TestSSEFrameReader_CompleteFrames(t *testing.T) {
@@ -101,7 +81,7 @@ func TestSSEFrameReader_CompleteFrames(t *testing.T) {
 	}
 
 	// Verify aggregated monitor_scan log entry (Bug 2 fix: 1 entry per stream).
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -186,7 +166,7 @@ func TestSSEFrameReader_PartialFrames(t *testing.T) {
 	}
 
 	// Should have one aggregated monitor_scan entry.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -238,7 +218,7 @@ func TestSSEFrameReader_OversizedFrame(t *testing.T) {
 		t.Error("oversized frame must be forwarded completely")
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	// Should have at least a WARN log for oversized frame.
 	hasSkipWarn := false
 	for _, e := range entries {
@@ -300,7 +280,7 @@ func TestSSEFrameReader_EmptyFrames(t *testing.T) {
 	}
 
 	// Should have one monitor_scan with result=clean.
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -346,7 +326,7 @@ func TestSSEFrameReader_NoDataLines(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	// Should have aggregated monitor_scan with PII from the second frame.
 	found := false
 	for _, e := range entries {
@@ -388,7 +368,7 @@ func TestSSEFrameReader_PIILoggingDisabled(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -439,7 +419,7 @@ func TestSSEFrameReader_MultipleDataLines(t *testing.T) {
 	}
 	_ = output
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -498,7 +478,7 @@ func TestSSEFrameReader_InterleavedBoundaries(t *testing.T) {
 		t.Error("output should contain the email")
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	found := false
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" && e["result"] == "pii_found" {
@@ -531,32 +511,40 @@ func TestSSEFrameReader_TimeoutHandling(t *testing.T) {
 		ContentType:  "text/event-stream",
 		StatusCode:   200,
 	})
-	// Override timeout to 10ms for test.
-	reader.frameTimeout = 10 * time.Millisecond
+	reader.acc.timeout = 10 * time.Millisecond
 	defer func() { _ = reader.Close() }()
 
-	// Write a partial frame (no closing \n\n).
+	// Deterministic channel-based coordination to avoid flaky Sleep-based
+	// timing (PR-106). The io.Pipe Write call blocks until Read is called,
+	// so we must Read first to unblock the goroutine's initial Write, then
+	// use channels to verify it completed.
+	writeFirstDone := make(chan struct{})
+	continueWrite := make(chan struct{})
+
 	go func() {
 		_, _ = w.Write([]byte("data: incomplete frame"))
-		// Wait for timeout to trigger.
+		close(writeFirstDone) // reached after main goroutine calls Read
+		<-continueWrite
 		time.Sleep(50 * time.Millisecond)
-		// Then send more data.
-		_, _ = w.Write([]byte(" still no close"))
+		_, _ = w.Write([]byte(" more data"))
 		time.Sleep(50 * time.Millisecond)
 		_ = w.Close()
 	}()
 
+	// Read first chunk — unblocks the goroutine's Write.
 	buf := make([]byte, 256)
 	n, _ := reader.Read(buf)
 	if n == 0 {
-		t.Error("should read some bytes")
+		t.Error("should read first chunk")
 	}
-	_ = n
 
-	// Wait for timeout to process.
-	time.Sleep(30 * time.Millisecond)
+	<-writeFirstDone // goroutine's first Write completed
+	close(continueWrite)
 
-	entries := parseLogEntries(t, &logBuf)
+	time.Sleep(80 * time.Millisecond) // let goroutine write second chunk + timeout expire
+	reader.Read(buf)                  // reads second chunk, timer expired → timeout fires
+
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	foundTimeout := false
 	for _, e := range entries {
 		if e["msg"] == "pii_detection_skipped" &&
@@ -566,8 +554,7 @@ func TestSSEFrameReader_TimeoutHandling(t *testing.T) {
 		}
 	}
 	if !foundTimeout {
-		// Timeout may not have triggered yet depending on timing.
-		t.Log("timeout detection log not found (may be timing-dependent)")
+		t.Error("expected sse_frame_timeout warning in logs, got none")
 	}
 }
 
@@ -677,7 +664,7 @@ func TestSSEFrameReader_DoneMarkerTermination(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {
@@ -721,7 +708,7 @@ func TestSSEFrameReader_AggregatedSummaryForClean(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
-	entries := parseLogEntries(t, &logBuf)
+	entries := testutils.ParseLogEntries(t, &logBuf)
 	var scanEntries []map[string]any
 	for _, e := range entries {
 		if e["msg"] == "monitor_scan" {

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Tarekinh0/qindu/internal/pii"
+	"github.com/Tarekinh0/qindu/internal/providers"
 )
 
 // maxLogPathLen is the maximum length for the path field in detection logs.
@@ -104,73 +105,24 @@ func (m *MonitorInterceptor) InterceptRequest(req *http.Request) (*http.Request,
 		return req, req.Body, nil
 	}
 
-	// Content-Length pre-check before buffering (SR-1). Skip when unknown (chunked: -1).
-	if req.ContentLength >= 0 && req.ContentLength > int64(m.maxInputLen) {
-		m.logger.Warn("pii_detection_skipped",
-			"reason", "oversize",
-			"direction", "request",
-			"host", host,
-			"method", req.Method,
-			"path", reqPath,
-			"content_length", req.ContentLength,
-			"bytes_limit", m.maxInputLen,
-		)
-		return req, req.Body, nil
+	// Delegate to shared body scanner (PR-100).
+	_, newBody, scanErr := scanBody(req.Body, req.ContentLength, bodyScanConfig{
+		engine:      m.engine,
+		logger:      m.logger,
+		maxInputLen: m.maxInputLen,
+		piiLogging:  m.piiLogging,
+		host:        host,
+		method:      req.Method,
+		path:        reqPath,
+		direction:   "request",
+		// extractor nil → full body scanning (MonitorInterceptor mode).
+	})
+
+	if scanErr != nil {
+		return nil, nil, fmt.Errorf("reading request body: %w", scanErr)
 	}
 
-	// Read capped body via LimitReader. The original body is NOT closed here —
-	// the oversize path needs it still open for MultiReader.
-	limitReader := io.LimitReader(req.Body, int64(m.maxInputLen+1))
-	bodyBytes, readErr := io.ReadAll(limitReader)
-	if readErr != nil {
-		_ = req.Body.Close()
-		return nil, nil, fmt.Errorf("reading request body: %w", readErr)
-	}
-
-	// If body exceeded the limit, return combined reader with still-open original body.
-	if len(bodyBytes) > m.maxInputLen {
-		m.logger.Warn("pii_detection_skipped",
-			"reason", "oversize",
-			"direction", "request",
-			"host", host,
-			"method", req.Method,
-			"path", reqPath,
-			"bytes_limit", m.maxInputLen,
-		)
-		// req.Body has been partially consumed (maxInputLen+1 bytes).
-		// Remaining bytes are still in req.Body. MultiReader concatenates them.
-		// Use combinedReadCloser to propagate Close() to the underlying body.
-		combinedReader := io.MultiReader(
-			bytes.NewReader(bodyBytes),
-			req.Body,
-		)
-		return req, &combinedReadCloser{combinedReader, req.Body}, nil
-	}
-
-	// Body fits within limit — close original body since we consumed it all.
-	_ = req.Body.Close()
-
-	// Run detection — engine always runs when path matches (even when pii_logging=false,
-	// because we need the result for the monitor_scan entry).
-	var entities []pii.Entity
-	var detectErr error
-	entities, detectErr = m.detect(string(bodyBytes))
-	if detectErr != nil {
-		m.logger.Warn("pii_detection_skipped",
-			"reason", "engine_error",
-			"direction", "request",
-			"host", host,
-			"method", req.Method,
-			"path", reqPath,
-			"error", detectErr.Error(),
-		)
-		return req, io.NopCloser(bytes.NewReader(bodyBytes)), nil
-	}
-
-	// Always emit a monitor_scan entry per message (Bug 2 fix).
-	m.logMonitorScan(entities, host, "request", req.Method, reqPath, 0, "", len(bodyBytes))
-
-	return req, io.NopCloser(bytes.NewReader(bodyBytes)), nil
+	return req, newBody, nil
 }
 
 // InterceptResponse processes an HTTP response before forwarding to the browser.
@@ -239,72 +191,24 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 		return resp, frameReader, nil
 
 	case ctAnalyze:
-		// Analyze full body (non-streaming text/json).
-		// Content-Length pre-check (SR-1). Skip when unknown (chunked: -1).
-		if resp.ContentLength >= 0 && resp.ContentLength > int64(m.maxInputLen) {
-			m.logger.Warn("pii_detection_skipped",
-				"reason", "oversize",
-				"direction", "response",
-				"host", host,
-				"content_length", resp.ContentLength,
-				"bytes_limit", m.maxInputLen,
-				"content_type", sanitizeContentTypeForLog(mediaType),
-			)
-			return resp, resp.Body, nil
+		// Delegate to shared body scanner (PR-100).
+		sanitizedCT := sanitizeContentTypeForLog(mediaType)
+		_, newBody, scanErr := scanBody(resp.Body, resp.ContentLength, bodyScanConfig{
+			engine:      m.engine,
+			logger:      m.logger,
+			maxInputLen: m.maxInputLen,
+			piiLogging:  m.piiLogging,
+			host:        host,
+			method:      method,
+			path:        path,
+			direction:   "response",
+			statusCode:  resp.StatusCode,
+			contentType: sanitizedCT,
+		})
+		if scanErr != nil {
+			return nil, nil, fmt.Errorf("reading response body: %w", scanErr)
 		}
-
-		// Read capped body without closing the original reader.
-		limitReader := io.LimitReader(resp.Body, int64(m.maxInputLen+1))
-		bodyBytes, readErr := io.ReadAll(limitReader)
-		if readErr != nil {
-			_ = resp.Body.Close()
-			return nil, nil, fmt.Errorf("reading response body: %w", readErr)
-		}
-
-		if len(bodyBytes) > m.maxInputLen {
-			oversizeArgs := []any{
-				"reason", "oversize",
-				"direction", "response",
-				"host", host,
-				"bytes_limit", m.maxInputLen,
-				"content_type", sanitizeContentTypeForLog(mediaType),
-			}
-			if resp.ContentLength < 0 {
-				oversizeArgs = append(oversizeArgs, "content_length_known", false)
-			}
-			m.logger.Warn("pii_detection_skipped", oversizeArgs...)
-			// Use combinedReadCloser to propagate Close() to the underlying body.
-			combinedReader := io.MultiReader(
-				bytes.NewReader(bodyBytes),
-				resp.Body,
-			)
-			return resp, &combinedReadCloser{combinedReader, resp.Body}, nil
-		}
-
-		// Body fits — close original since we consumed it all.
-		_ = resp.Body.Close()
-
-		// Run detection — engine always runs when path matches.
-		var entities []pii.Entity
-		var detectErr error
-		entities, detectErr = m.detect(string(bodyBytes))
-		if detectErr != nil {
-			m.logger.Warn("pii_detection_skipped",
-				"reason", "engine_error",
-				"direction", "response",
-				"host", host,
-				"content_type", sanitizeContentTypeForLog(mediaType),
-				"error", detectErr.Error(),
-			)
-			return resp, io.NopCloser(bytes.NewReader(bodyBytes)), nil
-		}
-
-		// Always emit a monitor_scan entry per message (Bug 2 fix).
-		m.logMonitorScan(entities, host, "response", method,
-			path, resp.StatusCode, sanitizeContentTypeForLog(mediaType),
-			len(bodyBytes))
-
-		return resp, io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		return resp, newBody, nil
 
 	default:
 		// Unknown action — skip defensively.
@@ -318,79 +222,6 @@ func (m *MonitorInterceptor) InterceptResponse(resp *http.Response) (*http.Respo
 	}
 }
 
-// detect runs the engine and recovers from panics (SR-16).
-// Returns the detected entities and any error. The error is guaranteed to be PII-free.
-func (m *MonitorInterceptor) detect(text string) ([]pii.Entity, error) {
-	var entities []pii.Entity
-	var err error
-
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("engine panic: %v", r)
-			}
-		}()
-		entities, err = m.engine.Detect(text)
-	}()
-
-	return entities, err
-}
-
-// logMonitorScan emits a single monitor_scan structured log entry per message.
-// Every scanned message produces exactly one entry with result "clean" or "pii_found".
-// This replaces the old per-detection pii_detected format (Bug 2 fix).
-//
-// When pii_logging is true: entity_count and entity_summary are included for pii_found.
-// When pii_logging is false: entity_count and entity_summary are omitted (privacy).
-// pii_values_logged is always false.
-func (m *MonitorInterceptor) logMonitorScan(
-	entities []pii.Entity,
-	host, direction, method, path string,
-	statusCode int, contentType string,
-	bytesAnalyzed int,
-) {
-	// Determine result before constructing args to avoid fragile index mutation.
-	result := "clean"
-	if len(entities) > 0 {
-		result = "pii_found"
-	}
-
-	args := []any{
-		"direction", direction,
-		"result", result,
-		"bytes_analyzed", bytesAnalyzed,
-		"pii_values_logged", false,
-	}
-
-	if len(entities) > 0 {
-		args = append(args, "entity_count", len(entities))
-		if m.piiLogging {
-			// Include entity_summary when pii_logging is enabled.
-			entitySummary := buildEntitySummary(entities)
-			args = append(args, "entity_summary", entitySummary)
-		}
-	}
-
-	// Add HTTP metadata.
-	if host != "" {
-		args = append(args, "host", host)
-	}
-	if method != "" {
-		args = append(args, "method", method)
-	}
-	if path != "" {
-		args = append(args, "path", path)
-	}
-	if statusCode > 0 {
-		args = append(args, "status_code", statusCode)
-	}
-	if contentType != "" {
-		args = append(args, "content_type", contentType)
-	}
-
-	m.logger.Info("monitor_scan", args...)
-}
-
 // buildEntitySummary creates a count map of entity types for log aggregation.
 // Used by both MonitorInterceptor.logMonitorScan and SSEFrameReader for the
 // aggregated monitor_scan entry.
@@ -400,6 +231,65 @@ func buildEntitySummary(entities []pii.Entity) map[string]int {
 		summary[string(e.Type)]++
 	}
 	return summary
+}
+
+// MonitorScanArgs holds all fields for a monitor_scan structured log entry.
+// Used by MonitorInterceptor, ProviderInterceptor, SSEFrameReader, and ProviderSSEReader
+// to emit identically formatted log entries (PR-101: consolidated from 3 duplicate implementations).
+type MonitorScanArgs struct {
+	Direction     string
+	Result        string
+	BytesAnalyzed int
+	EntityCount   int
+	EntitySummary map[string]int
+	PIILogging    bool
+	SSEFrame      bool
+	Host          string
+	Method        string
+	Path          string
+	StatusCode    int
+	ContentType   string
+}
+
+// emitMonitorScan emits a single monitor_scan structured log entry.
+// Format is shared by all interceptor types (MonitorInterceptor, ProviderInterceptor,
+// SSEFrameReader, ProviderSSEReader) to ensure identical log format (CS-11-10).
+func emitMonitorScan(logger *slog.Logger, args MonitorScanArgs) {
+	argsSlice := []any{
+		"direction", args.Direction,
+		"result", args.Result,
+		"bytes_analyzed", args.BytesAnalyzed,
+		"pii_values_logged", false,
+	}
+
+	if args.SSEFrame {
+		argsSlice = append(argsSlice, "sse_frame", true)
+	}
+
+	if args.EntityCount > 0 {
+		argsSlice = append(argsSlice, "entity_count", args.EntityCount)
+		if args.PIILogging && args.EntitySummary != nil {
+			argsSlice = append(argsSlice, "entity_summary", args.EntitySummary)
+		}
+	}
+
+	if args.Host != "" {
+		argsSlice = append(argsSlice, "host", args.Host)
+	}
+	if args.Method != "" {
+		argsSlice = append(argsSlice, "method", args.Method)
+	}
+	if args.Path != "" {
+		argsSlice = append(argsSlice, "path", args.Path)
+	}
+	if args.StatusCode > 0 {
+		argsSlice = append(argsSlice, "status_code", args.StatusCode)
+	}
+	if args.ContentType != "" {
+		argsSlice = append(argsSlice, "content_type", args.ContentType)
+	}
+
+	logger.Info("monitor_scan", argsSlice...)
 }
 
 // --- Content-Type classification ---
@@ -458,7 +348,219 @@ func classifyContentType(mediaType string) ctAction {
 	return ctSkip
 }
 
-// --- Helpers ---
+// --- Shared body scanner (PR-100: eliminates ~300 lines of duplication
+//     between MonitorInterceptor and ProviderInterceptor) ---
+
+// bodyScanConfig holds configuration for the shared body-scanner helper.
+type bodyScanConfig struct {
+	engine      *pii.Engine
+	logger      *slog.Logger
+	maxInputLen int
+	piiLogging  bool
+	host        string
+	method      string
+	path        string
+	direction   string
+	statusCode  int
+	contentType string
+	// extractor returns text segments from body bytes for PII scanning.
+	// nil means scan the full body as a single text blob (MonitorInterceptor mode).
+	extractor func([]byte) []providers.TextSegment
+	// rewriter transforms body bytes for forward compatibility (enforce mode).
+	// nil means return body unchanged.
+	rewriter func([]byte, []providers.TextSegment) []byte
+}
+
+// scanBody performs the full body-read/detect/log workflow shared by both
+// MonitorInterceptor and ProviderInterceptor for non-SSE request/response
+// body analysis.
+//
+// It handles Content-Length pre-check, LimitReader consumption, oversize
+// detection with combined reader fallback, text extraction, PII detection,
+// and monitor_scan log emission.
+//
+// Returns the detected entities (for caller's optional use) and the
+// replacement body reader (which MUST be closed by the caller or the proxy
+// framework). On oversize, the returned reader is a combined reader that
+// owns the original body's Close; the entities slice will be nil.
+func scanBody(body io.ReadCloser, contentLength int64, cfg bodyScanConfig) ([]pii.Entity, io.ReadCloser, error) {
+	// Content-Length pre-check (skip detection, forward body untouched).
+	if contentLength >= 0 && contentLength > int64(cfg.maxInputLen) {
+		cfg.logger.Warn("pii_detection_skipped",
+			"reason", "oversize",
+			"direction", cfg.direction,
+			"host", cfg.host,
+			"method", cfg.method,
+			"path", cfg.path,
+			"content_length", contentLength,
+			"bytes_limit", cfg.maxInputLen,
+		)
+		return nil, body, nil
+	}
+
+	result := readBodyBytes(body, cfg.maxInputLen)
+	if result.err != nil {
+		return nil, nil, result.err
+	}
+
+	if result.oversize {
+		cfg.logger.Warn("pii_detection_skipped",
+			"reason", "oversize",
+			"direction", cfg.direction,
+			"host", cfg.host,
+			"method", cfg.method,
+			"path", cfg.path,
+			"bytes_limit", cfg.maxInputLen,
+		)
+		return nil, result.combined, nil
+	}
+
+	bodyBytes := result.bodyBytes
+	if bodyBytes == nil {
+		return nil, io.NopCloser(bytes.NewReader(nil)), nil
+	}
+
+	// Extract text segments: use configured extractor, or fall back to full body.
+	var segments []providers.TextSegment
+	if cfg.extractor != nil {
+		segments = cfg.extractor(bodyBytes)
+	} else {
+		// MonitorInterceptor mode: scan full body as a single segment.
+		segments = []providers.TextSegment{
+			{Start: 0, End: len(bodyBytes), Text: string(bodyBytes)},
+		}
+	}
+
+	// Validate segments (CS-11-09).
+	totalSegments := len(segments)
+	segments = validateTextSegments(segments, len(bodyBytes))
+	if dropped := totalSegments - len(segments); dropped > 0 {
+		cfg.logger.Warn("text_segments_filtered",
+			"reason", "invalid_segment_bounds_or_content",
+			"direction", cfg.direction,
+			"host", cfg.host,
+			"dropped", dropped,
+			"valid", len(segments),
+			"total", totalSegments,
+		)
+	}
+
+	// Run PII detection on extracted segments.
+	var allEntities []pii.Entity
+	for _, seg := range segments {
+		entities, detectErr := detectWithEngine(cfg.engine, seg.Text)
+		if detectErr != nil {
+			cfg.logger.Warn("pii_detection_skipped",
+				"reason", "engine_error",
+				"direction", cfg.direction,
+				"host", cfg.host,
+				"method", cfg.method,
+				"path", cfg.path,
+				"error", detectErr.Error(),
+			)
+			continue
+		}
+		allEntities = append(allEntities, entities...)
+	}
+
+	// Emit monitor_scan log entry (identical format for both interceptors).
+	emitMonitorScan(cfg.logger, MonitorScanArgs{
+		Direction:     cfg.direction,
+		Result:        resultLabel(allEntities),
+		BytesAnalyzed: len(bodyBytes),
+		EntityCount:   len(allEntities),
+		EntitySummary: buildEntitySummaryCond(allEntities, cfg.piiLogging),
+		PIILogging:    cfg.piiLogging,
+		Host:          cfg.host,
+		Method:        cfg.method,
+		Path:          cfg.path,
+		StatusCode:    cfg.statusCode,
+		ContentType:   cfg.contentType,
+	})
+
+	// Rewrite body if a rewriter is configured (ProviderInterceptor enforce mode).
+	rewritten := bodyBytes
+	if cfg.rewriter != nil {
+		rewritten = cfg.rewriter(bodyBytes, segments)
+	}
+
+	return allEntities, io.NopCloser(bytes.NewReader(rewritten)), nil
+}
+
+// resultLabel returns the monitor_scan result label for the given entities.
+func resultLabel(entities []pii.Entity) string {
+	if len(entities) > 0 {
+		return "pii_found"
+	}
+	return "clean"
+}
+
+// buildEntitySummaryCond builds an entity summary map only if piiLogging is enabled.
+func buildEntitySummaryCond(entities []pii.Entity, piiLogging bool) map[string]int {
+	if !piiLogging || len(entities) == 0 {
+		return nil
+	}
+	return buildEntitySummary(entities)
+}
+
+// bodyReadResult holds the outcome of reading and validating a body.
+type bodyReadResult struct {
+	bodyBytes []byte        // body content (if fits within limit)
+	combined  io.ReadCloser // combined reader (if oversize, nil otherwise)
+	oversize  bool          // true if body exceeded the limit
+	err       error         // fatal I/O error
+}
+
+// readBodyBytes reads and validates a request/response body against size limits,
+// returning the raw bytes if within limits, or a combined reader if oversize.
+//
+// After calling, the caller must:
+//   - Close the original body ONLY if result.oversize is false AND result.err is nil
+//     (the combined reader owns the original body's Close in the oversize case).
+//   - NOT close the original body if result.oversize is true (the combined reader
+//     will close it).
+//
+// Must not be used concurrently on the same body.
+func readBodyBytes(body io.ReadCloser, maxLen int) bodyReadResult {
+	if body == nil {
+		return bodyReadResult{bodyBytes: nil}
+	}
+
+	limitReader := io.LimitReader(body, int64(maxLen+1))
+	bodyBytes, readErr := io.ReadAll(limitReader)
+	if readErr != nil {
+		_ = body.Close()
+		return bodyReadResult{err: fmt.Errorf("reading body: %w", readErr)}
+	}
+
+	if len(bodyBytes) > maxLen {
+		combinedReader := io.MultiReader(
+			bytes.NewReader(bodyBytes),
+			body,
+		)
+		return bodyReadResult{
+			combined: &combinedReadCloser{combinedReader, body},
+			oversize: true,
+		}
+	}
+
+	// Body fits — close original since we consumed it all.
+	_ = body.Close()
+	return bodyReadResult{bodyBytes: bodyBytes}
+}
+
+// detectWithEngine runs PII detection on a text string with panic recovery.
+// Shared by all interceptor types.
+func detectWithEngine(engine *pii.Engine, text string) (entities []pii.Entity, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			entities = nil
+			err = fmt.Errorf("engine panic: %v", r)
+		}
+	}()
+	entities, err = engine.Detect(text)
+	return
+}
 
 // sanitizeLogPath truncates the URL path to maxLogPathLen bytes (SR-3).
 // Truncation is UTF-8 safe: the cut point is at the last valid rune boundary

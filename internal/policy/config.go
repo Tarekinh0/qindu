@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -49,6 +50,65 @@ type TLSConfig struct {
 
 // ProvidersConfig maps provider names to their settings.
 type ProvidersConfig map[string]ProviderConfig
+
+// Validate checks provider configurations for correctness and security (PR-102).
+// 1. Rejects empty provider names.
+// 2. Rejects empty domain lists for enabled providers.
+// 3. Validates each domain: no slashes, wildcards, spaces, or colons (ports go in a separate field).
+// 4. Detects duplicate domains across providers and returns an error.
+func (pc ProvidersConfig) Validate() error {
+	seenDomains := make(map[string]string) // domain → first provider name
+
+	for name, prov := range pc {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("provider name must not be empty")
+		}
+
+		if !prov.Enabled {
+			continue
+		}
+
+		if len(prov.Domains) == 0 {
+			return fmt.Errorf("provider %q is enabled but has no domains configured", name)
+		}
+
+		for _, domain := range prov.Domains {
+			domain = strings.TrimSpace(domain)
+			if domain == "" {
+				return fmt.Errorf("provider %q has an empty domain entry", name)
+			}
+
+			// Reject slashes.
+			if strings.ContainsAny(domain, "/\\") {
+				return fmt.Errorf("provider %q domain %q must not contain slashes", name, domain)
+			}
+
+			// Reject wildcards.
+			if strings.Contains(domain, "*") {
+				return fmt.Errorf("provider %q domain %q must not contain wildcards", name, domain)
+			}
+
+			// Reject spaces.
+			if strings.Contains(domain, " ") {
+				return fmt.Errorf("provider %q domain %q must not contain spaces", name, domain)
+			}
+
+			// Reject colons (ports belong in a separate field).
+			if strings.Contains(domain, ":") {
+				return fmt.Errorf("provider %q domain %q must not contain a port (use a separate port field)", name, domain)
+			}
+
+			// Detect duplicate domains across providers.
+			normalized := strings.ToLower(domain)
+			if firstProvider, exists := seenDomains[normalized]; exists {
+				return fmt.Errorf("duplicate domain %q found in providers %q and %q", domain, firstProvider, name)
+			}
+			seenDomains[normalized] = name
+		}
+	}
+
+	return nil
+}
 
 // ProviderConfig holds configuration for a single AI provider.
 type ProviderConfig struct {
@@ -172,6 +232,11 @@ func (c *Config) Validate() error {
 	// Validate vault TTL if configured.
 	if err := c.Agent.Vault.Validate(); err != nil {
 		return fmt.Errorf("invalid agent.vault config: %w", err)
+	}
+
+	// Validate provider configs (PR-102).
+	if err := c.Providers.Validate(); err != nil {
+		return fmt.Errorf("invalid providers config: %w", err)
 	}
 
 	return nil
