@@ -27,42 +27,136 @@ Before taking any action, all agents MUST read the canonical backlog and roadmap
 Qindu uses a strict multi-agent governance model to ensure security, privacy, and quality.
 
 ### Agents
-- **qindu-orchestrator**: Primary agent and arbiter. Manages the sprint lifecycle, creates stories, coordinates other agents, and resolves conflicts or rejections.
-- **qindu-dpo**: Reviewer. Ensures GDPR compliance, privacy by design, PII minimization, and data protection principles. Cannot modify code.
-- **qindu-ciso**: Reviewer. Ensures security, threat modeling, TLS/CA hardening, and compliance with ADRs. Cannot modify code.
-- **qindu-devsecops**: Implementer. Writes Go code, tests, and CI/CD workflows. Cannot modify ADRs.
-- **qindu-qa**: Reviewer. Verifies tests, PII detection accuracy, edge cases, and quality. Cannot modify code.
-- **qindu-release**: Reviewer. Verifies CI/CD, MSI packaging, code signing, and supply chain security. Cannot modify code.
-- **qindu-peer-reviewer**: Senior Go dev. Merciless code review against Clean Code, SOLID, Go Proverbs, Pragmatic Programmer, DDD, Effective Go, Code Complete. Produces structured scorecards with blocking bugs, design flaws, and maintainability grades. Invoked after DevSecOps delivers `dev-notes.md`, before CISO/DPO review gates. Cannot modify code.
-- **qindu-qemu-tester**: Reviewer. Validates on real Windows QEMU VM — install, uninstall, service, proxy, TLS, and story compliance via SSH. Cannot modify code.
+
+#### qindu-orchestrator — Document Router & Clerk
+
+The orchestrator is a **document clerk**, not an arbiter. Three responsibilities:
+
+1. **Route**: Pass artifacts between agents in the correct sequential order. Ensure the right agent receives the right files at the right time.
+2. **Contextualize**: When a reviewer raises a concern, the orchestrator may provide **cross-sprint context** (ADRs, previous closures, risk register) to help the reviewer understand the broader picture. He never provides code opinions, code excerpts, or hints about what the code does.
+3. **Close**: When all gates report their final verdict, the orchestrator reads every verdict and writes `closure.md` — a summary of what happened, not a judgment. If any gate says BLOCKED, the sprint stays open.
+
+**Hard constraints**:
+- Never reads source code. Never opens `.go` files.
+- Never provides code excerpts, line numbers, or file paths to reviewers or DevSecOps.
+- Cannot override, soften, or "accept on behalf of" any reviewer's verdict.
+- Cannot decide that a MEDIUM finding is "acceptable for V1" — only the reviewer who raised it can accept it.
+- At sprint start, uses the **grill-me** skill to interview the human about design choices before writing `story.md`.
+
+#### qindu-dpo — Privacy Reviewer
+
+Absolute veto on privacy. Ensures GDPR compliance, privacy by design, PII minimization, and data protection principles. Cannot modify code.
+
+Receives: `story.md` + git diff. Nothing else.
+
+#### qindu-ciso — Security Reviewer
+
+Absolute veto on security. Ensures threat modeling, TLS/CA hardening, and compliance with ADRs. Cannot modify code.
+
+Receives: `story.md` + git diff. Nothing else.
+
+#### qindu-devsecops — Pure Executor
+
+Writes Go code, tests, and CI/CD workflows. Cannot modify ADRs.
+
+Reads reviews and the git diff independently. Implements exactly what reviewers demand. Fixes every finding unless the reviewer explicitly marks it as accepted. No negotiation power with reviewers — his job is to execute, not argue.
+
+#### qindu-qa — Quality Reviewer
+
+Absolute veto on quality. Verifies tests, PII detection accuracy, edge cases, and invariants. Cannot modify code.
+
+Receives: `story.md` + git diff. Nothing else.
+
+#### qindu-release — Release Reviewer
+
+Absolute veto on supply chain. Verifies CI/CD, MSI packaging, code signing, and provenance. Cannot modify code.
+
+Receives: `story.md` + git diff. Nothing else.
+
+#### qindu-peer-reviewer — Senior Go Reviewer
+
+Merciless code review against Clean Code, SOLID, Go Proverbs, Pragmatic Programmer, DDD, Effective Go, Code Complete. Produces structured scorecards with blocking bugs, design flaws, and maintainability grades. Invoked after DevSecOps delivers `dev-notes.md`, before CISO/DPO review gates. Cannot modify code.
+
+Receives: `story.md` + git diff. Nothing else.
+
+**Blank-slate rule**: Invoked as a fresh, independent session each time. Receives ONLY `story.md` + git diff + existing `qemu-test-report.md` (factual VM findings from prior iterations). No `dev-notes.md`, no `dpo-requirements.md`, no `ciso-requirements.md`, no prior `peer-review.md`.
+
+#### qindu-qemu-tester — VM Integration Reviewer
+
+Validates on real Windows QEMU VM — install, uninstall, service, proxy, TLS, and story compliance via SSH. Cannot modify code.
+
+Receives: `story.md` + MSI artifact + test instructions. Nothing else.
+
+---
 
 ### Strict Sequential Workflow
 
 The workflow is strictly sequential and file-based within the sprint folder (`docs/implementation/sprints/QINDU-XXXX/`):
 
-1. **Sprint Initialization**: `qindu-orchestrator` creates the sprint folder and writes `story.md`.
-2. **Design**:
-   - `qindu-dpo` writes `dpo-requirements.md`.
-   - `qindu-ciso` writes `ciso-requirements.md`.
-   - *If blocked, the sprint stops and `qindu-orchestrator` arbitrates.*
-3. **Implementation**: `qindu-devsecops` implements the story (code, tests) and writes `dev-notes.md` (factual, technical).
-4. **Peer Review**: `qindu-peer-reviewer` reviews the implementation against Clean Code, SOLID, Go Proverbs, and other design standards. Produces `peer-review.md` with scorecard, critical findings, and verdict. If REJECT or FIX_AND_RESUBMIT with critical bugs, the sprint returns to step 3 for fixes.
+1. **Story Initialization**:
+   - Orchestrator uses the **grill-me** skill to interview the human about design choices, tradeoffs, and boundaries.
+   - Orchestrator writes `story.md` based on the interview.
 
-   **Blank-slate rule**: After each DevSecOps fix cycle, the peer reviewer MUST be invoked as a fresh, independent session. The peer reviewer receives ONLY `story.md` + source code + existing `qemu-test-report.md` (factual VM findings from prior iterations) — no `dev-notes.md`, no `dpo-requirements.md`, no `ciso-requirements.md`, no prior `peer-review.md`. This eliminates confirmation bias from previous reviewers. Loop step 3→4 indefinitely until MERGE_READY is achieved.
-5. **Review**:
-   - `qindu-ciso` verifies the implementation and writes `ciso-review.md`.
-   - `qindu-dpo` verifies the implementation and writes `dpo-review.md`.
-   - *On fix iterations (step 7→3→4→5), reviewers MUST also read `qemu-test-report.md` from the prior cycle.*
-6. **Validation**:
-    - `qindu-qa` verifies tests, PII accuracy, and edge cases, then writes `qa-review.md`.
-    - `qindu-release` verifies CI/CD and supply chain, then writes `release-review.md`.
-    - *On fix iterations (step 7→3→4→5→6), validators MUST also read `qemu-test-report.md` from the prior cycle.*
-7. **VM Integration Test**: `qindu-qemu-tester` deploys the MSI to the Windows QEMU VM, runs smoke tests, edge cases, and uninstall verification, then writes `qemu-test-report.md` with verdict PASS or BLOCKED.
-    - *If BLOCKED, the sprint returns to step 3 for fixes and re-enters the full pipeline (steps 3→4→5→6→7) with the qemu-test-report fed to all downstream reviewers and validators.*
-8. **Closure**: `qindu-orchestrator` reviews all artifacts, resolves any remaining conflicts, and produces `closure.md` with the final verdict.
+2. **Design**:
+   - `qindu-dpo` receives `story.md` + git diff, writes `dpo-requirements.md`.
+   - `qindu-ciso` receives `story.md` + git diff, writes `ciso-requirements.md`.
+   - *If either says BLOCKED, the sprint stops and the orchestrator negotiates using cross-sprint context only.*
+
+3. **Implementation**:
+   - `qindu-devsecops` receives `story.md` + `dpo-requirements.md` + `ciso-requirements.md` + git diff.
+   - Implements the story (code, tests) and writes `dev-notes.md` (factual, technical).
+   - DevSecOps reads the code himself — the orchestrator provides zero code guidance.
+
+4. **Peer Review**:
+   - `qindu-peer-reviewer` receives `story.md` + git diff only (blank-slate).
+   - If REJECT or FIX_AND_RESUBMIT, the sprint returns to step 3.
+   - Loop 3→4 until MERGE_READY.
+
+5. **Security & Privacy Review**:
+   - `qindu-ciso` receives `story.md` + git diff only, writes `ciso-review.md`.
+   - `qindu-dpo` receives `story.md` + git diff only, writes `dpo-review.md`.
+   - If BLOCKED by either, the sprint returns to step 3. Orchestrator may negotiate using cross-sprint context only — never code.
+   - On fix iterations, reviewers also read `qemu-test-report.md` from the prior cycle.
+
+6. **Quality & Release Validation**:
+   - `qindu-qa` receives `story.md` + git diff only, writes `qa-review.md`.
+   - `qindu-release` receives `story.md` + git diff only, writes `release-review.md`.
+   - If BLOCKED by either, the sprint returns to step 3.
+   - On fix iterations, validators also read `qemu-test-report.md` from the prior cycle.
+
+7. **VM Integration Test**:
+   - `qindu-qemu-tester` deploys the MSI to the Windows QEMU VM, runs smoke tests, edge cases, and uninstall verification.
+   - Writes `qemu-test-report.md` with verdict PASS or BLOCKED.
+   - If BLOCKED, returns to step 3 and re-enters the full pipeline (steps 3→4→5→6→7).
+
+8. **Closure**:
+   - Orchestrator reads all verdicts from all agents.
+   - If ALL gates say PASS (or equivalent), writes `closure.md` summarizing what happened — verdicts, changes, findings, risks. Not a judgment call.
+   - If ANY gate says BLOCKED, the sprint stays open.
+   - Updates the risk register and backlog with all findings accepted or deferred by reviewers.
+
+### Reviewer Input Contract
+
+Every reviewer (DPO, CISO, Peer, QA, Release, QEMU) receives exactly:
+- `story.md` — the sprint specification
+- Git diff — the code to judge
+- `qemu-test-report.md` — only on fix iteration cycles (factual VM findings)
+- `backlog.yaml` + `roadmap.md` — project context (always available)
+
+Nothing else. No `dev-notes.md`. No code excerpts. No orchestration hints. No "here's what to look at." Reviewers reach their own conclusions independently.
+
+### Finding Resolution Rule
+
+Every finding raised by any reviewer MUST be either:
+- **Fixed** by DevSecOps in a subsequent fix cycle, OR
+- **Explicitly accepted** by the reviewer who raised it (with documented rationale)
+
+The orchestrator cannot accept a finding on behalf of a reviewer. MEDIUM, LOW — makes no difference. Only the reviewer can accept their own findings.
+
+---
 
 ### Commands
-- `/qindu-sprint`: Starts a full sprint cycle.
+- `/qindu-sprint`: Starts a full sprint cycle (steps 1→8).
 - `/qindu-gate`: Final gate before merging.
 - `/qindu-backlog-status`: Displays macro status of the project, including risk register reconciliation. See Backlog Governance above.
 
@@ -75,7 +169,7 @@ The canonical risk register is `docs/implementation/backlog/qindu-v1-backlog.yam
 At sprint closure (`closure.md`), the orchestrator MUST:
 
 1. **Extract every finding** from all review documents (peer-review, ciso-review, dpo-review, qa-review, release-review) that:
-   - Was accepted for V1 but not fixed
+   - Was explicitly accepted by the reviewer but not fixed
    - Was deferred to a future sprint
    - Was documented as a residual risk or known limitation
 2. **Cross-reference** each finding against the existing risk register (R-001 through R-XXX).

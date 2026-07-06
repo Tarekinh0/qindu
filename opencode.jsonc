@@ -29,7 +29,7 @@
 
   "agent": {
     "qindu-orchestrator": {
-      "description": "Pilote le cycle Agile Qindu et orchestre DPO, CISO, DevSecOps, QA et Release.",
+      "description": "Document router & clerk for the Qindu project. Routes artifacts between agents, writes story.md and closure.md, negotiates with reviewers using cross-sprint context only. Never reads source code. Cannot override reviewer verdicts. Uses grill-me at sprint start.",
       "mode": "primary",
       "temperature": 0.1,
       "steps": 40,
