@@ -97,6 +97,8 @@ Two validation modes:
 
 Receives: `story.md` + MSI artifact + test instructions. API key from `.ssh/openai.key`. Nothing else.
 
+WiX builds are performed on the QEMU VM using the WiX Toolset installed at `C:\Program Files (x86)\WiX Toolset v3\`.
+
 ---
 
 ### Strict Sequential Workflow
