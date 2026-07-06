@@ -64,3 +64,34 @@ The workflow is strictly sequential and file-based within the sprint folder (`do
 ### Commands
 - `/qindu-sprint`: Starts a full sprint cycle.
 - `/qindu-gate`: Final gate before merging.
+- `/qindu-backlog-status`: Displays macro status of the project, including risk register reconciliation. See Backlog Governance above.
+
+## Risk Register Governance
+
+The canonical risk register is `docs/implementation/backlog/qindu-v1-backlog.yaml` (`risks:` block). The file `docs/implementation/backlog/qindu-risk-register.md` is a human-readable mirror — it MUST be kept in sync with the YAML.
+
+### Risk Reconciliation (per sprint closure)
+
+At sprint closure (`closure.md`), the orchestrator MUST:
+
+1. **Extract every finding** from all review documents (peer-review, ciso-review, dpo-review, qa-review, release-review) that:
+   - Was accepted for V1 but not fixed
+   - Was deferred to a future sprint
+   - Was documented as a residual risk or known limitation
+2. **Cross-reference** each finding against the existing risk register (R-001 through R-XXX).
+3. **Add new risks** to `qindu-v1-backlog.yaml` for any finding that is:
+   - MEDIUM severity or higher, OR
+   - Documented by 2+ independent reviewers, OR
+   - Represents a PII exposure, crypto weakness, TLS vulnerability, or supply chain gap
+4. **Add `inherited_from_XXXX`** entries to affected future sprint entries in the backlog.
+5. **Update `risks_resolved`** on future sprint entries when a sprint is specifically designed to resolve a tracked risk.
+6. **Update `qindu-risk-register.md`** to mirror the YAML.
+
+### During `/qindu-backlog-status`
+
+The orchestrator MUST include a **Risk Reconciliation** section that flags:
+- Risks accepted but never assigned to a resolving sprint (orphaned risks)
+- Risks deferred to sprints that have been completed but were not addressed
+- Risks present in closure documents but absent from the central register
+
+This prevents the register from drifting out of sync with the actual review artifacts.

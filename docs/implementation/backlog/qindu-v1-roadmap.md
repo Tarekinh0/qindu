@@ -40,8 +40,8 @@ QINDU-0008: Vault local chiffré       ← DONE ✅
 ### Phase 4: Enforce Pipeline (Sprints QINDU-0009 → QINDU-0013)
 
 ```
-QINDU-0011: Adapter ChatGPT web       ← READY (next sprint)
-QINDU-0009: Mode Enforce + Réhydratation non-streaming
+QINDU-0011: Adapter ChatGPT web       ← DONE ✅
+QINDU-0009: Mode Enforce + Réhydratation non-streaming  ← READY (next sprint)
 QINDU-0010: Réhydratation streaming (SSE)
 QINDU-0012: Adapter Claude web
 QINDU-0013: Gestion historique conversations
@@ -86,8 +86,8 @@ QINDU-0001 (Proxy)
   │     ├── QINDU-0006 (Tokenisation)
   │     │     └── QINDU-0008 (Vault) ✅ DONE
   │     └── QINDU-0007 (Mode Monitor)
-  ├── QINDU-0011 (ChatGPT adapter) ← next sprint
-  │     └── QINDU-0009 (Mode Enforce) ← depends on 0007 + 0008 + 0011
+  ├── QINDU-0011 (ChatGPT adapter) ✅ DONE
+  │     └── QINDU-0009 (Mode Enforce) ← READY — depends on 0007 + 0008 + 0011
   │           └── QINDU-0010 (Rehyd streaming SSE)
   │                 ├── QINDU-0012 (Claude adapter)
   │                 └── QINDU-0014 (Gemini adapter)
@@ -108,8 +108,8 @@ _None currently._
 ## Key Milestones
 
 1. **M0 - Proxy fonctionnel**: QINDU-0001 done → le proxy tourne, CONNECT, MITM, PAC, logs
-2. **M1 - Installable**: QINDU-0002 + QINDU-0004 done → installation/désinstallation Windows complète, CI verte (0 issues golangci-lint, 5/5 packages test pass)
-3. **M2 - PII Ready**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles, mode monitor avec path whitelisting + per-message logging + MSI uninstall clean
-4. **M3 - MVP Privacy**: QINDU-0008 + QINDU-0011 + QINDU-0009 + QINDU-0010 done → flux complet tokenisation → réhydratation, ChatGPT fonctionnel
+2. **M1 - Installable ✅**: QINDU-0002 + QINDU-0004 done → installation/désinstallation Windows complète, CI verte (0 issues golangci-lint, 5/5 packages test pass)
+3. **M2 - PII Ready ✅**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles, mode monitor avec path whitelisting + per-message logging + MSI uninstall clean
+4. **M3 - MVP Privacy**: QINDU-0008 ✅ + QINDU-0011 ✅ + QINDU-0009 + QINDU-0010 done → flux complet tokenisation → réhydratation, ChatGPT fonctionnel
 5. **M4 - Multi-Provider V1**: QINDU-0012 + QINDU-0013 + QINDU-0014 done → ChatGPT, Claude, Gemini supportés avec historique
 6. **M5 - Multi-platform**: QINDU-0018 + QINDU-0019 + QINDU-0021 done → Linux et macOS pleinement supportés avec chiffrement CA, packaging natif, trust stores

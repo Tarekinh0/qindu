@@ -62,6 +62,150 @@ risks:
     severity: low
     status: accepted
     resolution: "L'adapter ChatGPT (0011) doit précéder le mode enforce (0009) pour éviter les faux positifs sur tokens internes ChatGPT (JWT, hex hashes). Ordre inversé par rapport au plan initial, mais évite de construire l'enforce pipeline deux fois."
+  - id: R-010
+    title: "vault.key non shreddé après PurgeAll"
+    affects: [QINDU-0008]
+    severity: medium
+    status: accepted
+    resolution: "Le fichier vault.key survit à une purge complète. Un attaquant avec accès disque + anciens snapshots bbolt pourrait déchiffrer le PII historique. Accepté pour V1 — opération 'purge all + shred key' à concevoir dans un sprint DPO futur (ex: rotation de clé + overwrite + sync + rename). Documenté dans CISO F-002 / DPO NB-2."
+  - id: R-011
+    title: "/tmp CA fallback sur Unix — clé CA exposée"
+    affects: [QINDU-0018, QINDU-0019]
+    severity: medium
+    status: accepted
+    resolution: "getCADir() tombe sur /tmp/qindu-ca si PROGRAMDATA et HOME sont absents. Sur Linux multi-utilisateur, /tmp est world-readable → clé CA exposée. Inatteignable sur Windows (PROGRAMDATA toujours défini). DOIT être retiré dans QINDU-0018 — reject startup si pas de home dir au lieu du fallback. Documenté dans CISO F-005 / DPO NB-1."
+  - id: R-012
+    title: "Pas de rotation/retention des logs fichier"
+    affects: [QINDU-0007]
+    severity: medium
+    status: accepted
+    resolution: "Les fichiers de log croissent sans limite en mode output:file. Pas de rotation, pas de limite de taille, pas de rétention automatique. Accepté pour V1 dev. Rotation à ajouter dans sprint maintenance futur ou intégré à QINDU-0020 (fenêtre config). Documenté dans QINDU-0007 closure APC-6."
+  - id: R-013
+    title: "Overflow canal async → perte silencieuse mappings PII"
+    affects: [QINDU-0009]
+    severity: low
+    status: accepted
+    resolution: "Buffer canal 1024. Sous charge extrême (<1% probabilité), les écritures vault sont droppées avec un WARN log (PII-free). Le proxy continue en mode mémoire — pas de PII leaked, mais mapping non persisté. Accepté V1 (design decision DD-10). Test de recovery overflow (vérifier émission WARN) à ajouter dans QINDU-0009."
+  - id: R-014
+    title: "MSI orphaned registration — installation interrompue"
+    affects: [QINDU-0002]
+    severity: medium
+    status: accepted
+    resolution: "Installation MSI interrompue (reboot, crash) laisse des traces orphelines : service Windows, CA dans trust store, policies Chrome/Edge. Nettoyage manuel requis. Pas de sprint dédié prévu pour V1 — documenter dans le README. Documenté dans QINDU-0007 closure F-2."
+  - id: R-015
+    title: "Permissions fichier log 0644 au lieu de 0600"
+    affects: [QINDU-0007]
+    severity: low
+    status: accepted
+    resolution: "Les fichiers de log agent.log sont créés en 0644 (world-readable) au lieu de 0600. Sur machine multi-utilisateur, les métadonnées de détection PII (compteurs, types) seraient lisibles par d'autres utilisateurs. Pas de PII values dans les logs. Correction triviale dans un sprint maintenance futur. Documenté dans QINDU-0007 closure PR-200."
+  - id: R-016
+    title: "CA absente du Windows trust store — regression QINDU-0004"
+    affects: [QINDU-0002]
+    severity: medium
+    status: accepted
+    resolution: "La CA n'est plus installée dans le trust store Windows suite à une regression identifiée pendant QINDU-0007. Les certificats feuilles MITM ne sont pas reconnus par le navigateur → erreurs TLS. Correction dans un HOTFIX ou sprint maintenance futur. Documenté dans QINDU-0007 closure CA."
+  - id: R-017
+    title: "valueToToken — clés PII sur heap Go standard (bypass arena locking)"
+    affects: [QINDU-0006, QINDU-0009]
+    severity: medium
+    status: accepted
+    resolution: "Les clés de la map valueToToken (PII en clair) résident sur le heap Go standard, hors de l'arène verrouillée. Un process swap exposerait ces clés dans le pagefile. L'arène mlock protège les valeurs du mapping mais pas les clés de lookup. Accepté V1 — commentaire WARNING documente le trade-off. Résolution future: dedup par hash pour éviter de stocker le PII comme clé. Documenté dans QINDU-0006 peer/CISO/DPO/QA (4 reviewers)."
+  - id: R-018
+    title: "Memory locking CI — happy path non testable sous Linux"
+    affects: [QINDU-0006]
+    severity: medium
+    status: accepted
+    resolution: "Le CI Linux n'a pas CAP_IPC_LOCK/RLIMIT_MEMLOCK. Seul le chemin fallback (non-locked) est testé automatiquement. Si le code arena (alloc, reset) casse silencieusement, aucun test automatisé ne le détecte. La VM QEMU Windows est la seule vérification du vrai locking. Accepté V1 — ajouter CAP_IPC_LOCK au runner CI si disponible, sinon documenter. Documenté dans QINDU-0006 CISO/QA (2 reviewers)."
+  - id: R-019
+    title: "MemoryStore.Close() — fuite arena (VirtualFree/Munmap jamais appelé)"
+    affects: [QINDU-0006]
+    severity: medium
+    status: accepted
+    resolution: "~4 MiB d'espace d'adressage virtuel fuité par conversation. VirtualFree/Munmap jamais appelé dans Close(). Pour QINDU-0008 (vault process-lifetime) c'est acceptable — l'arène vit avec le processus. Pour une utilisation générique de MemoryStore, c'est une fuite de ressources. Accepté V1. Documenté dans QINDU-0006 CISO/QA (2 reviewers)."
+  - id: R-020
+    title: "Prefix DB staleness — 70 patterns compilés, nouveaux formats non détectés"
+    affects: [QINDU-0005]
+    severity: low
+    status: accepted
+    resolution: "Les 70 préfixes de secrets API sont compilés en dur. Un nouveau fournisseur AI avec un format de clé inédit ne sera pas détecté par le recognizer SECRET (prefix) — le recognizer entropy (4-layer) fournit une mitigation partielle. Mise à jour = recompilation du binaire. Accepté V1. Documenté dans QINDU-0005 closure/DPO (2 reviewers)."
+  - id: R-021
+    title: "SR-13 non implémenté — TLS SNI host absent des logs de détection"
+    affects: [QINDU-0007]
+    severity: medium
+    status: accepted
+    resolution: "Le requirement CISO SHOULD de QINDU-0007 (logguer le champ host TLS SNI dans les entrées de détection) n'est pas implémenté. Les logs monitor_scan ne contiennent pas le hostname de la connexion TLS, rendant le diagnostic multi-domaine plus difficile. Aucun sprint assigné. Accepté V1. Documenté dans QINDU-0007 CISO review."
+  - id: R-022
+    title: "NAME false positives — stop-word list limitée à 26 mots"
+    affects: [QINDU-0005]
+    severity: low
+    status: accepted
+    resolution: "Les 26 stop-words couvrent les role accounts connus (assistant, system, user, admin...). Des role accounts en langues étrangères ou des patterns rares peuvent produire des faux positifs NAME. Confiance plafonnée à 0.70. Accepté V1. Documenté dans QINDU-0005 closure/DPO (2 reviewers)."
+  - id: R-023
+    title: "IBAN et IP_ADDRESS non détectés par le moteur PII"
+    affects: [QINDU-0005, QINDU-0011, QINDU-0009]
+    severity: low
+    status: accepted
+    resolution: "Le moteur PII (QINDU-0005) ne reconnaît pas les IBAN (MOD-97 non implémenté pour tous les pays) ni les adresses IP. Constaté lors du test manuel ChatGPT dans QINDU-0011: extraction texte fonctionne mais le moteur ne détecte pas ces formats. Gap à combler dans un sprint futur d'amélioration du moteur PII. Accepté V1. Documenté dans QINDU-0011 closure Known Lim 2."
+  - id: R-024
+    title: "Config override bool fields silently ignored — *bool pointer needed"
+    affects: [QINDU-0002, QINDU-0009]
+    severity: medium
+    status: accepted
+    resolution: "Les champs booléens de config override (CertCacheEnabled, PIILogging) sont silencieusement ignorés car yaml.v3 ne distingue pas 'not set' (false zero-value) de 'explicitly set to false'. Un utilisateur qui met pii_logging: false dans son override croit avoir désactivé le logging PII — mais le flag est ignoré. DOIT être résolu avec *bool avant QINDU-0009 (enforce mode). Documenté dans QINDU-0002 peer/DPO/release reviews (3 reviewers)."
+  - id: R-025
+    title: "MSI upgrade certutil -addstore duplicate CN blocks installation"
+    affects: [QINDU-0002]
+    severity: medium
+    status: accepted
+    resolution: "certutil -addstore Root avec Return='check' échoue sur upgrade MSI si le CA est déjà présent (duplicate CN). Bloque l'installation. Fresh install OK, upgrade fragile. Workaround manuel (supprimer l'ancien CA d'abord). Documenté dans QINDU-0002 CISO/release reviews."
+  - id: R-026
+    title: "MITM upstream dial sans timeout — goroutine leak sur connexion hung"
+    affects: [QINDU-0001]
+    severity: medium
+    status: accepted
+    resolution: "Le chemin MITM utilise tls.Dial sans timeout. Le chemin tunnel utilise net.DialTimeout(10s). Une connexion hung vers un service AI externe cause une fuite de goroutine. Accepté V1 — le graceful shutdown 30s nettoie au pire cas. Correction recommandée dans QINDU-0002, jamais implémentée. Documenté dans QINDU-0001 CISO review SEC-F1."
+  - id: R-027
+    title: "Pas de génération SBOM/SPDX dans le CI"
+    affects: [QINDU-0004]
+    severity: medium
+    status: accepted
+    resolution: "Aucun SBOM CycloneDX ou SPDX généré. go mod verify fournit une intégrité partielle mais pas de format machine-readable standard. Angle mort supply chain pour consommateurs downstream, audits de conformité, scanners de vulnérabilités. Accepté V1. Documenté dans QINDU-0004/0008 release reviews."
+  - id: R-028
+    title: "Pas d'attestation SLSA build provenance"
+    affects: [QINDU-0004]
+    severity: medium
+    status: accepted
+    resolution: "Aucune provenance signée ni attestation in-toto. Niveau SLSA ~1 (build scripté, versionné, checksum). Impossible de prouver cryptographiquement que le MSI a été buildé depuis le commit source annoncé. Un runner CI compromis pourrait produire des binaires backdoorés. Accepté V1. Documenté dans QINDU-0004/0008 release reviews."
+  - id: R-029
+    title: "pii_logging: false config flag is dead code — aucun effet runtime"
+    affects: [QINDU-0001, QINDU-0005]
+    severity: medium
+    status: accepted
+    resolution: "Le champ pii_logging: false est parsé dans la config mais aucun middleware de redaction n'existe. Un opérateur qui s'appuie sur ce flag a un faux sentiment de sécurité. Devient critique à partir de QINDU-0005+ (traitement PII). Accepté V1 — le logging PII n'est pas encore actif en mode monitor. Documenté dans QINDU-0001 DPO review DPO-F3."
+  - id: R-030
+    title: "Binaire agent.exe tracké dans Git — supply chain anti-pattern"
+    affects: [QINDU-0002, QINDU-0008]
+    severity: medium
+    status: accepted
+    resolution: "installer/wix/agent.exe est versionné dans Git. Le binaire tracké pourrait diverger de ce que le CI produit depuis les sources. Le CI rebuild toujours depuis source, donc risque de divergence mitigé. Accepter V1 — soit retirer du tracking, soit ajouter vérification CI que le binaire tracké matche le build. Documenté dans QINDU-0008 release review RL-004."
+  - id: R-031
+    title: "Pas de cleanup per-user vault.db/Key à la désinstallation MSI"
+    affects: [QINDU-0008, QINDU-0009]
+    severity: medium
+    status: accepted
+    resolution: "Quand le vault sera câblé (QINDU-0009), vault.db + vault.key persisteront dans chaque profil utilisateur (%LOCALAPPDATA%\\Qindu\\) après désinstallation. Le MSI tourne en SYSTEM et ne peut pas énumérer les profils utilisateurs. Aucun moyen software-assisted de purger les données PII. Différent de R-014 (MSI orphaned registration = installation interrompue). Documenté dans QINDU-0008 DPO NB-3 / wix-cleanup-audit WIX-006."
+  - id: R-032
+    title: "Sous-répertoire logs non pré-créé par WiX — ACL gap + 0755"
+    affects: [QINDU-0008]
+    severity: medium
+    status: accepted
+    resolution: "Go crée %PROGRAMDATA%\\Qindu\\logs\\ avec os.MkdirAll(dir, 0755) au premier usage. Le répertoire est world-readable et peut ne pas hériter correctement les ACLs du parent créé par WiX. R-015 couvre les permissions fichier (0644) mais pas ce gap de création répertoire. Documenté dans QINDU-0008 wix-cleanup-audit WIX-003."
+  - id: R-033
+    title: "SeImpersonatePrivilege révoqué par GPO → toutes connexions denied"
+    affects: [QINDU-0008, QINDU-0009]
+    severity: medium
+    status: accepted
+    resolution: "L'impersonation token Windows (ImpersonateLoggedOnUser) nécessite SeImpersonatePrivilege. NT AUTHORITY\\LocalService l'a par défaut, mais une GPO peut le révoquer → toutes les tentatives d'impersonation échouent → DENY pour chaque connexion. Le vault devient inutilisable en mode service. Risque de disponibilité, pas de perte de données (deny est safe). Ajouter un WARNING au startup si le privilège est absent. Documenté dans QINDU-0008 lazy-vault-analysis §7."
 
 # ─── Phase 1: Fondation Proxy ───────────────────────────────────────
 items:
@@ -167,7 +311,7 @@ items:
   human_inputs_required: []
   forbidden: [real PII in test fixtures, PII in logs]
   acceptance_evidence: "9 recognizers: EMAIL (RFC 5322+TDD), PHONE (FR/EU/NANP/INTL), IBAN (34 pays, MOD-97), CREDIT_CARD (5 issuers, Luhn), JWT (structural, header validation), NAME (email inference, stop-word filtered), SECRET (70 prefix patterns + entropy 4-layer), PRIVATE_KEY (7 PEM armor types). Engine concurrent-safe, overlap resolution déterministe, 1 MiB input bound. 253 tests, 100% statement coverage, go test -race clean, golangci-lint 0 issues, 0 init()."
-  notes: "Faux négatifs acceptés pour noms de personnes. eyJ (Supabase JWT) non inclus dans prefix DB. Fuzz+benchmarks pour sprint futur."
+  notes: "Faux négatifs acceptés pour noms de personnes. eyJ (Supabase JWT) non inclus dans prefix DB. Fuzz+benchmarks pour sprint futur. Risques résiduels documentés: R-002 (hex hash FN), R-003 (unicode evasion), R-004 (chunk evasion), R-005 (core dump), R-020 (prefix DB staleness), R-022 (NAME FP)."
   last_sprint_folder: "docs/implementation/sprints/QINDU-0005/"
   closure_date: "2026-06-27"
   go_version: "1.26"
@@ -234,16 +378,21 @@ items:
 # Without adapters, enforce mode blindly scans everything (noisy).
 
 - id: QINDU-0011
-  title: "Adapter ChatGPT web"
-  status: DRAFT
+  title: "Adapter ChatGPT web + Infrastructure Provider-Agnostique"
+  status: DONE
   adr_ref: [ADR-002]
-  domains: [providers, chatgpt]
+  domains: [providers, chatgpt, interceptor, sse]
   dependencies: [QINDU-0001, QINDU-0005]
-  gates_required: [QA]
+  gates_required: [DPO, CISO, QA, Release]
   human_inputs_required: []
   forbidden: [hardcoded credentials]
-  acceptance_evidence: "Endpoints conversationnels ChatGPT identifiés et parsés. Champs textuels extraits pour analyse PII, autres champs ignorés. Requêtes et réponses non-streaming détournées correctement."
-  notes: "Adapter isolé dans internal/providers/chatgpt/. Premier sprint de la phase 4 — l'adapter doit exister avant le pipeline enforce pour éviter les faux positifs sur les tokens internes ChatGPT."
+  acceptance_evidence: "32/32 AC PASS. Provider-agnostic interceptor avec plugins isolés. ChatGPT plugin: path matching, extraction JSON Patch RFC 6902, dispatch SSE par event type, fallback extractAllStringValues. ProviderInterceptor: byte I/O, PII engine, logging. sseFrameAccumulator partagé. Domain routing déterministe. QEMU: 6 détections réelles, 0 faux positifs sur metadata/JWT/hex. 10 blank-slate peer reviews, 9 fix cycles. Toutes gates PASS."
+  notes: "Provider-agnostic avec plugins isolés dans internal/providers/<name>/. ChatGPT premier des trois adapters (Claude → QINDU-0012, Gemini → QINDU-0014). 4 types d'events SSE ChatGPT non reconnus (delta, server_ste_metadata, message_stream_complete, conversation_detail_metadata) → fallback extractAllStringValues, WARN log → à ajouter à la known-ignore list dans QINDU-0012."
+  last_sprint_folder: "docs/implementation/sprints/QINDU-0011/"
+  closure_date: "2026-07-05"
+  go_version: "1.26"
+  test_count: 295
+  bugs_fixed: 5
 
 - id: QINDU-0009
   title: "Mode Enforce + Réhydratation non-streaming"
@@ -255,7 +404,15 @@ items:
   human_inputs_required: []
   forbidden: [PII leakage in upstream requests, PII in logs]
   acceptance_evidence: "Mode enforce tokenise les requêtes avant envoi upstream via ChatGPT adapter. Réponses non-streaming réhydratées. ChatGPT fonctionnel avec un prompt contenant un email."
-  notes: "Intégration complète Interceptor PII + Tokenizer + Vault + ChatGPT adapter. Premier sprint où le PII est effectivement bloqué — le demo milestone."
+  notes: "Intégration complète Interceptor PII + Tokenizer + Vault + ChatGPT adapter. Premier sprint où le PII est effectivement bloqué — le demo milestone. Sera aussi le premier sprint nécessitant des tests d'intégration API réels (prompt → tokenisation → upstream → réhydratation → vérification) — un nouvel agent spécialisé (API testing) pourrait être nécessaire pour valider le workflow bout-en-bout."
+  inherited_from_0008:
+    - "Wiring per-connection VaultManager.GetOrCreate() dans le proxy handler (le vault existe en bibliothèque mais le proxy ne l'utilise pas encore)"
+    - "Token lifecycle : le token Windows doit survivre à resolvePathFromPID pour la création lazy du vault utilisateur"
+    - "SID lookup failure → deny : câbler le refus de connexion (actuellement library-only, pas appelé par le proxy)"
+    - "NB-6 : Documenter l'edge case TTL — si le proxy s'arrête avant un sweep, les données peuvent brièvement dépasser le TTL configuré"
+    - "Test overflow canal async : vérifier que le WARN est bien émis quand le buffer 1024 est plein (QA gap)"
+    - "DPO PT-1 à PT-12 : 12 tests privacy à vérifier en intégration (actuellement testés au niveau bibliothèque uniquement)"
+  risks_inherited: [R-004, R-005, R-009, R-013, R-017, R-023]
 
 - id: QINDU-0010
   title: "Réhydratation streaming (SSE)"
@@ -267,7 +424,8 @@ items:
   human_inputs_required: []
   forbidden: [buffering complet réponse, PII in logs]
   acceptance_evidence: "Réponses SSE avec tokens coupés entre chunks sont correctement réhydratées. Buffer glissant < 4KB. Latence minimale préservée."
-  notes: "Réutilise le parsing SSE frame-by-frame de QINDU-0007. Ajoute seulement le sliding buffer pour tokens fragmentés entre chunks."
+  notes: "Réutilise le parsing SSE frame-by-frame de QINDU-0007. Ajoute seulement le sliding buffer pour tokens fragmentés entre chunks. Ce sprint résout R-004 (évasion par chunking) — les tokens fragmentés entre chunks SSE sont réassemblés avant réhydratation."
+  risks_resolved: [R-004]
 
 - id: QINDU-0012
   title: "Adapter Claude web"
@@ -279,7 +437,7 @@ items:
   human_inputs_required: []
   forbidden: [hardcoded credentials]
   acceptance_evidence: "Endpoints conversationnels Claude identifiés et parsés. Fonctionne en streaming et non-streaming."
-  notes: "Adapter isolé dans internal/providers/claude/. Même pattern que ChatGPT adapter."
+  notes: "Adapter isolé dans internal/providers/claude/. Même pattern que ChatGPT adapter. Inclut également : ajout des 4 types d'events SSE ChatGPT non reconnus (delta, server_ste_metadata, message_stream_complete, conversation_detail_metadata) à la known-ignore list du plugin ChatGPT pour supprimer les WARN logs résiduels de QINDU-0011."
 
 - id: QINDU-0013
   title: "Gestion historique conversations"
@@ -392,7 +550,8 @@ items:
     CA installed in system trust store (NSS: update-ca-trust / certutil) on opt-in.
     Memory locking via mlock (reuse memlock_linux.go infrastructure).
     Vault path: XDG_DATA_HOME (~/.local/share/qindu/vault.db).
-  notes: "Core crypto/hardening uniquement. Packaging → QINDU-0021. Split pour éviter un sprint fourre-tout."
+  notes: "Core crypto/hardening uniquement. Packaging → QINDU-0021. Split pour éviter un sprint fourre-tout. Inclut également : suppression du fallback /tmp/qindu-ca dans getCADir() — reject startup si pas de home dir (CISO F-005, DPO NB-1, R-011)."
+  risks_resolved: [R-011]
 
 - id: QINDU-0021
   title: "Linux packaging — systemd + .deb/.rpm"
