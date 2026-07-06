@@ -89,35 +89,12 @@ func (p *ChatGPTPlugin) ExtractText(body []byte) []providers.TextSegment {
 		return nil
 	}
 
-	var segments []providers.TextSegment
-	lastPos := 0
+	var allParts []string
 	for _, msg := range request.Messages {
-		for _, part := range msg.Content.Parts {
-			if part == "" {
-				continue
-			}
-			// Find the byte offset of this part in the body by searching
-			// for the text directly (no json.Marshal re-encoding, PR-103).
-			partBytes := []byte(part)
-			start := bytesIndexFrom(body, partBytes, lastPos)
-			if start >= 0 {
-				lastPos = start + len(part)
-				segments = append(segments, providers.TextSegment{
-					Start: start,
-					End:   lastPos,
-					Text:  part,
-				})
-			} else {
-				p.logger.Warn("chatgpt_plugin_text_not_found",
-					"reason", "text_offset_not_found",
-					"text_len", len(part),
-					"body_len", len(body),
-				)
-			}
-		}
+		allParts = append(allParts, msg.Content.Parts...)
 	}
 
-	return segments
+	return p.extractParts(body, allParts)
 }
 
 // RewriteRequestBody returns the original request body unchanged in this sprint.
@@ -129,6 +106,61 @@ func (p *ChatGPTPlugin) RewriteRequestBody(body []byte, segments []providers.Tex
 // NewSession creates a new per-connection SSE session with a fresh document tree.
 func (p *ChatGPTPlugin) NewSession() providers.ProviderPluginSession {
 	return newChatGPTSession(p.logger)
+}
+
+// ExtractResponseText implements the optional providers.ResponseTextExtractor interface.
+// It parses a response body JSON and extracts text from message.content.parts[].
+// Returns nil/empty for metadata-only responses (prepare, sentinel, etc.).
+// This enables surgical rehydration — only user-content byte ranges are rehydrated,
+// not metadata fields (DPO DR-1).
+func (p *ChatGPTPlugin) ExtractResponseText(body []byte) []providers.TextSegment {
+	// Parse the response to find the top-level message content path.
+	var response struct {
+		Message *struct {
+			Content struct {
+				Parts []string `json:"parts"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+
+	if response.Message == nil {
+		return nil
+	}
+
+	return p.extractParts(body, response.Message.Content.Parts)
+}
+
+// extractParts is a helper shared by ExtractText and ExtractResponseText.
+// It searches for part strings within the raw body bytes.
+func (p *ChatGPTPlugin) extractParts(body []byte, parts []string) []providers.TextSegment {
+	var segments []providers.TextSegment
+	lastPos := 0
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		partBytes := []byte(part)
+		start := bytesIndexFrom(body, partBytes, lastPos)
+		if start >= 0 {
+			lastPos = start + len(partBytes)
+			segments = append(segments, providers.TextSegment{
+				Start: start,
+				End:   lastPos,
+				Text:  part,
+			})
+		} else {
+			p.logger.Warn("chatgpt_plugin_text_not_found",
+				"reason", "text_offset_not_found",
+				"text_len", len(part),
+				"body_len", len(body),
+			)
+		}
+	}
+	return segments
 }
 
 // chatGPTSession holds per-SSE-stream state for the ChatGPT plugin.

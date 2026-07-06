@@ -1,0 +1,28 @@
+{
+  "note": "Extrait de GET /debug/flow - entries 1, 7, 19 uniquement",
+  "entry_19_conversation_tokenized": {
+    "path": "/backend-anon/f/conversation",
+    "ingress_body_contains": "Hello my email is alice@gmail.com",
+    "egress_body_contains": "Hello my email is <<EMAIL_1>>",
+    "entity_summary": {"EMAIL": 1},
+    "body_bytes_in": 1125,
+    "body_bytes_out": 1121,
+    "verdict": "TOKENIZATION WORKS"
+  },
+  "entry_7_finalize_not_tokenized": {
+    "path": "/backend-anon/sentinel/chat-requirements/finalize",
+    "ingress_equals_egress": true,
+    "entity_summary": null,
+    "body_bytes_in": 6049,
+    "body_bytes_out": 6049,
+    "verdict": "PATH GUARD WORKS - finalize NOT tokenized"
+  },
+  "entry_24_finalize_not_tokenized": {
+    "path": "/backend-anon/sentinel/chat-requirements/finalize",
+    "ingress_equals_egress": true,
+    "entity_summary": null,
+    "body_bytes_in": 6093,
+    "body_bytes_out": 6093,
+    "verdict": "PATH GUARD WORKS - finalize NOT tokenized"
+  }
+}

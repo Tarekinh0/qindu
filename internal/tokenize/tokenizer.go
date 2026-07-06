@@ -1,6 +1,7 @@
 package tokenize
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -323,6 +324,25 @@ func validateEntities(entities []pii.Entity, textLen int) []pii.Entity {
 // equivalent to right-to-left mutable-buffer replacement since the original
 // string is immutable and byte offsets are never invalidated by prior
 // substitutions.
+// tokenizerCtxKey is the context key type for the per-request tokenizer.
+// Using a struct{} type prevents key collisions (SR-CISO-10).
+// Exported functions ContextWithTokenizer and TokenizerFromContext
+// provide type-safe access without exposing the key type.
+type tokenizerCtxKey struct{}
+
+// ContextWithTokenizer injects a tokenizer into the request context.
+// Returns a new context with the tokenizer stored.
+func ContextWithTokenizer(ctx context.Context, t *Tokenizer) context.Context {
+	return context.WithValue(ctx, tokenizerCtxKey{}, t)
+}
+
+// TokenizerFromContext extracts the tokenizer from the request context.
+// Returns nil if no tokenizer is present.
+func TokenizerFromContext(ctx context.Context) *Tokenizer {
+	t, _ := ctx.Value(tokenizerCtxKey{}).(*Tokenizer)
+	return t
+}
+
 func substituteEntities(text string, entities []pii.Entity, tokens []string) string {
 	if len(entities) == 0 {
 		return text

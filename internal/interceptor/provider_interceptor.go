@@ -206,6 +206,13 @@ func (p *ProviderInterceptor) InterceptResponse(resp *http.Response) (*http.Resp
 	}
 }
 
+// ShouldProcess returns true if the ProviderInterceptor will process this request.
+// Delegates to the plugin's MatchPath for provider-specific path filtering.
+// The host parameter is ignored — path matching is provider-internal.
+func (p *ProviderInterceptor) ShouldProcess(host, method, path string) bool {
+	return p.matchPathSafe(method, path)
+}
+
 // matchPathSafe calls plugin.MatchPath with panic recovery (CS-11-05).
 // On panic, logs ERROR and returns false (no match), falling through to
 // the next interceptor or passthrough.

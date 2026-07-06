@@ -21,6 +21,22 @@ type Interceptor interface {
 	// Returns the (possibly modified) response and a new body reader.
 	// The returned io.ReadCloser replaces the response body for forwarding.
 	InterceptResponse(resp *http.Response) (*http.Response, io.ReadCloser, error)
+
+	// ShouldProcess returns true if the interceptor intends to process (scan, tokenize,
+	// or rehydrate) traffic for the given host, method, and URL path.
+	//
+	// Callers MUST call ShouldProcess before reading the request body. This allows
+	// wrappers (e.g., DebugInterceptor) to avoid buffering bodies for endpoints
+	// that will be passed through unmodified (sentinel/challenge, telemetry, static assets).
+	//
+	// Parameters:
+	//   - host: the request Host header value (used by providerDispatcher for routing)
+	//   - method: HTTP method (GET, POST, etc.)
+	//   - path: URL path (e.g., /backend-anon/f/conversation)
+	//
+	// Returns false when the body can be safely passed through without inspection.
+	// Returns true when the interceptor will scan, tokenize, or rehydrate the body.
+	ShouldProcess(host, method, path string) bool
 }
 
 // NoOpInterceptor is an Interceptor that passes all traffic through unmodified.
@@ -36,4 +52,10 @@ func (n *NoOpInterceptor) InterceptRequest(req *http.Request) (*http.Request, io
 // InterceptResponse returns the response and body unchanged.
 func (n *NoOpInterceptor) InterceptResponse(resp *http.Response) (*http.Response, io.ReadCloser, error) {
 	return resp, resp.Body, nil
+}
+
+// ShouldProcess returns false for all paths — NoOpInterceptor never inspects bodies.
+// Callers should not buffer bodies for this interceptor.
+func (n *NoOpInterceptor) ShouldProcess(host, method, path string) bool {
+	return false
 }

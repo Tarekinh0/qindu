@@ -11,12 +11,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DebugConfig holds debug-mode settings (flow inspector, etc.).
+// All features default to disabled for production safety.
+type DebugConfig struct {
+	FlowInspector *bool `yaml:"flow_inspector"` // *bool to distinguish "not set" from false
+}
+
+// FlowInspectorValue returns the flow_inspector setting with nil-safe default (false).
+func (d *DebugConfig) FlowInspectorValue() bool {
+	if d.FlowInspector == nil {
+		return false
+	}
+	return *d.FlowInspector
+}
+
 // Config represents the full Qindu configuration.
 type Config struct {
 	Providers ProvidersConfig `yaml:"providers"`
 	Agent     AgentConfig     `yaml:"agent"`
 	Logging   LoggingConfig   `yaml:"logging"`
 	TLS       TLSConfig       `yaml:"tls"`
+	Debug     DebugConfig     `yaml:"debug"`
 }
 
 // MonitorConfig holds monitor-mode settings including path-based scan filtering.
@@ -33,10 +48,23 @@ type VaultConfig struct {
 type AgentConfig struct {
 	ListenAddr string        `yaml:"listen_addr"`
 	Mode       string        `yaml:"mode"`
-	FailMode   string        `yaml:"fail_mode"`
+	FailMode   *string       `yaml:"fail_mode"` // *string to distinguish "not set" from "explicitly empty" (R-024)
 	Vault      VaultConfig   `yaml:"vault"`
 	Monitor    MonitorConfig `yaml:"monitor"`
 	ListenPort int           `yaml:"listen_port"`
+}
+
+// FailModeValue returns the fail_mode string with nil-safe default.
+// For enforce mode: defaults to "fail_closed".
+// For monitor/transparent mode: defaults to "fail_open".
+func (a *AgentConfig) FailModeValue() string {
+	if a.FailMode == nil {
+		if a.Mode == "enforce" {
+			return "fail_closed"
+		}
+		return "fail_open"
+	}
+	return *a.FailMode
 }
 
 // TLSConfig holds TLS/CA settings.
@@ -45,7 +73,15 @@ type TLSConfig struct {
 	CAKeyAlgorithm     string `yaml:"ca_key_algorithm"`
 	UpstreamValidation string `yaml:"upstream_validation"`
 	CAValidityYears    int    `yaml:"ca_validity_years"`
-	CertCacheEnabled   bool   `yaml:"cert_cache_enabled"`
+	CertCacheEnabled   *bool  `yaml:"cert_cache_enabled"` // *bool to distinguish "not set" from false (R-024)
+}
+
+// CertCacheEnabledValue returns the cert_cache setting with nil-safe default (true).
+func (t *TLSConfig) CertCacheEnabledValue() bool {
+	if t.CertCacheEnabled == nil {
+		return true
+	}
+	return *t.CertCacheEnabled
 }
 
 // ProvidersConfig maps provider names to their settings.
@@ -120,9 +156,17 @@ type ProviderConfig struct {
 type LoggingConfig struct {
 	Level      string `yaml:"level"`
 	Format     string `yaml:"format"`
-	Output     string `yaml:"output"`  // "stderr" (default), "file", or "both"
-	LogDir     string `yaml:"log_dir"` // directory for log files (empty = auto-detect)
-	PIILogging bool   `yaml:"pii_logging"`
+	Output     string `yaml:"output"`      // "stderr" (default), "file", or "both"
+	LogDir     string `yaml:"log_dir"`     // directory for log files (empty = auto-detect)
+	PIILogging *bool  `yaml:"pii_logging"` // *bool to distinguish "not set" from false (R-024)
+}
+
+// PIILoggingValue returns the pii_logging setting with nil-safe default (false).
+func (l *LoggingConfig) PIILoggingValue() bool {
+	if l.PIILogging == nil {
+		return false
+	}
+	return *l.PIILogging
 }
 
 // LoadConfig reads and parses a YAML config file, returning the validated Config.
@@ -196,6 +240,11 @@ func (c *Config) Validate() error {
 		// Valid modes.
 	default:
 		return fmt.Errorf("agent.mode must be one of 'transparent', 'monitor', or 'enforce', got: %s", c.Agent.Mode)
+	}
+
+	// SR-CISO-11: enforce mode + fail_open is incompatible.
+	if c.Agent.Mode == "enforce" && c.Agent.FailMode != nil && *c.Agent.FailMode == "fail_open" {
+		return fmt.Errorf("agent.fail_mode 'fail_open' is incompatible with enforce mode — enforce mode requires fail_closed to prevent PII leakage. Set fail_mode to 'fail_closed' or switch to monitor mode.")
 	}
 
 	// Validate monitor scan paths — use defaults if none configured.
@@ -359,7 +408,7 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 	if override.Agent.Mode != "" {
 		c.Agent.Mode = override.Agent.Mode
 	}
-	if override.Agent.FailMode != "" {
+	if override.Agent.FailMode != nil {
 		c.Agent.FailMode = override.Agent.FailMode
 	}
 	if len(override.Agent.Monitor.ScanPaths) > 0 {
@@ -380,10 +429,11 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 	if override.TLS.CAKeyAlgorithm != "" {
 		c.TLS.CAKeyAlgorithm = override.TLS.CAKeyAlgorithm
 	}
-	// CertCacheEnabled: yaml.v3 defaults bool to false, so we cannot distinguish
-	// "not present" from "explicitly false". The override struct keeps the
-	// zero-value, so we skip it to avoid forcing false on every merge.
-	// If explicit bool override is needed, use a *bool pointer field.
+	// CertCacheEnabled: *bool pointer distinguishes "not set" (nil) from "explicitly false" (*false).
+	// R-024 migration: now correct.
+	if override.TLS.CertCacheEnabled != nil {
+		c.TLS.CertCacheEnabled = override.TLS.CertCacheEnabled
+	}
 	if override.TLS.UpstreamValidation != "" {
 		c.TLS.UpstreamValidation = override.TLS.UpstreamValidation
 	}
@@ -394,6 +444,11 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 			c.Providers = make(ProvidersConfig)
 		}
 		c.Providers[name] = prov
+	}
+
+	// Merge debug settings (DD-1: flow_inspector)
+	if override.Debug.FlowInspector != nil {
+		c.Debug.FlowInspector = override.Debug.FlowInspector
 	}
 
 	// Merge logging settings
@@ -409,9 +464,10 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 	if override.Logging.LogDir != "" {
 		c.Logging.LogDir = override.Logging.LogDir
 	}
-	// PIILogging: same bool zero-value problem as CertCacheEnabled — skipped.
-	// If the override YAML does not contain "pii_logging", the field stays false
-	// (zero value) and we do not overwrite the receiver's value.
+	// PIILogging: *bool pointer distinguishes "not set" from "explicitly false" (R-024).
+	if override.Logging.PIILogging != nil {
+		c.Logging.PIILogging = override.Logging.PIILogging
+	}
 
 	// Re-validate after merge
 	if err := c.Validate(); err != nil {
@@ -419,6 +475,12 @@ func (c *Config) MergeFileOverride(overridePath string) error {
 	}
 	return nil
 }
+
+// PtrBool returns a pointer to a bool.
+func PtrBool(b bool) *bool { return &b }
+
+// PtrStr returns a pointer to a string.
+func PtrStr(s string) *string { return &s }
 
 // DefaultConfig returns a Config with safe defaults.
 // The default mode is "monitor" (PII detection without modification).
@@ -429,7 +491,7 @@ func DefaultConfig() *Config {
 			ListenAddr: "127.0.0.1",
 			ListenPort: 8787,
 			Mode:       "monitor",
-			FailMode:   "fail_open",
+			FailMode:   PtrStr("fail_open"),
 			Monitor: MonitorConfig{
 				ScanPaths: defaultMonitorScanPaths(),
 			},
@@ -441,7 +503,7 @@ func DefaultConfig() *Config {
 			CAName:             "Qindu AI Privacy CA",
 			CAValidityYears:    10,
 			CAKeyAlgorithm:     "ECDSA_P256",
-			CertCacheEnabled:   true,
+			CertCacheEnabled:   PtrBool(true),
 			UpstreamValidation: "system",
 		},
 		Providers: ProvidersConfig{
@@ -451,9 +513,12 @@ func DefaultConfig() *Config {
 		Logging: LoggingConfig{
 			Level:      "info",
 			Format:     "json",
-			PIILogging: false,
+			PIILogging: PtrBool(false),
 			Output:     "stderr",
 			LogDir:     "",
+		},
+		Debug: DebugConfig{
+			FlowInspector: PtrBool(false),
 		},
 	}
 }

@@ -3,6 +3,7 @@ package policy
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -13,7 +14,7 @@ agent:
   listen_addr: "127.0.0.1"
   listen_port: 8787
   mode: "enforce"
-  fail_mode: "fail_open"
+  fail_mode: "fail_closed"
 
 tls:
   ca_name: "Test CA"
@@ -309,6 +310,10 @@ func TestValidate_AgentMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.Agent.Mode = tt.mode
+			// For enforce mode, reset fail_mode to nil (defaults to fail_closed).
+			if tt.mode == "enforce" {
+				cfg.Agent.FailMode = nil
+			}
 			err := cfg.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Validate() error = %v, wantErr = %v", err, tt.wantErr)
@@ -375,7 +380,7 @@ providers:
 func TestMergeFileOverride_AgentFieldMerged(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Agent.Mode = "transparent"
-	cfg.Agent.FailMode = "fail_open"
+	cfg.Agent.FailMode = PtrStr("fail_open")
 
 	tmpDir := t.TempDir()
 	overridePath := filepath.Join(tmpDir, "override.yaml")
@@ -399,8 +404,8 @@ agent:
 		t.Errorf("mode should be overridden to monitor, got %s", cfg.Agent.Mode)
 	}
 	// These should be unchanged
-	if cfg.Agent.FailMode != "fail_open" {
-		t.Errorf("fail_mode should remain fail_open, got %s", cfg.Agent.FailMode)
+	if cfg.Agent.FailMode == nil || *cfg.Agent.FailMode != "fail_open" {
+		t.Errorf("fail_mode should remain fail_open, got %v", cfg.Agent.FailMode)
 	}
 }
 
@@ -498,5 +503,184 @@ func TestMergeFileOverride_InvalidYAML(t *testing.T) {
 	err := cfg.MergeFileOverride(overridePath)
 	if err == nil {
 		t.Error("expected error for invalid override YAML")
+	}
+}
+
+// =============================================================================
+// QINDU-0009 Config Tests (R-024, SR-CISO-11, *bool/*string safety)
+// =============================================================================
+
+// TestConfig_EnforceModeRejectsFailOpen verifies that enforce mode + fail_open
+// is rejected by config validation (SR-CISO-11).
+func TestConfig_EnforceModeRejectsFailOpen(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Mode = "enforce"
+	cfg.Agent.FailMode = PtrStr("fail_open")
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for enforce mode with fail_open")
+	}
+	if !strings.Contains(err.Error(), "incompatible") {
+		t.Errorf("error should mention incompatibility, got: %v", err)
+	}
+}
+
+// TestConfig_EnforceModeNilFailModeDefaultsFailClosed verifies that
+// enforce mode with nil fail_mode defaults to fail_closed (valid).
+func TestConfig_EnforceModeNilFailModeDefaultsFailClosed(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Mode = "enforce"
+	cfg.Agent.FailMode = nil
+
+	err := cfg.Validate()
+	if err != nil {
+		t.Errorf("nil fail_mode in enforce mode should default to fail_closed and pass validation: %v", err)
+	}
+
+	// Verify FailModeValue() returns fail_closed.
+	if mode := cfg.Agent.FailModeValue(); mode != "fail_closed" {
+		t.Errorf("FailModeValue() = %q, want 'fail_closed'", mode)
+	}
+}
+
+// TestConfig_EnforceModeExplicitFailClosedPasses verifies explicit
+// fail_closed + enforce mode passes validation.
+func TestConfig_EnforceModeExplicitFailClosedPasses(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Mode = "enforce"
+	cfg.Agent.FailMode = PtrStr("fail_closed")
+
+	err := cfg.Validate()
+	if err != nil {
+		t.Errorf("explicit fail_closed in enforce mode should pass: %v", err)
+	}
+}
+
+// TestConfig_PIILoggingNilDefaultsFalse verifies that nil PIILogging
+// defaults to false (nil-safe).
+func TestConfig_PIILoggingNilDefaultsFalse(t *testing.T) {
+	var lc LoggingConfig
+	// PIILogging is nil.
+	if lc.PIILoggingValue() != false {
+		t.Error("nil PIILogging must default to false")
+	}
+}
+
+// TestConfig_PIILoggingExplicitFalse verifies explicit false is preserved.
+func TestConfig_PIILoggingExplicitFalse(t *testing.T) {
+	lc := LoggingConfig{PIILogging: PtrBool(false)}
+	if lc.PIILoggingValue() != false {
+		t.Error("explicit false PIILogging must return false")
+	}
+}
+
+// TestConfig_PIILoggingExplicitTrue verifies explicit true is preserved.
+func TestConfig_PIILoggingExplicitTrue(t *testing.T) {
+	lc := LoggingConfig{PIILogging: PtrBool(true)}
+	if lc.PIILoggingValue() != true {
+		t.Error("explicit true PIILogging must return true")
+	}
+}
+
+// TestConfig_CertCacheEnabledNilDefaultsTrue verifies nil CertCacheEnabled
+// defaults to true.
+func TestConfig_CertCacheEnabledNilDefaultsTrue(t *testing.T) {
+	var tc TLSConfig
+	if tc.CertCacheEnabledValue() != true {
+		t.Error("nil CertCacheEnabled must default to true")
+	}
+}
+
+// TestConfig_CertCacheEnabledExplicitFalse verifies explicit false is preserved.
+func TestConfig_CertCacheEnabledExplicitFalse(t *testing.T) {
+	tc := TLSConfig{CertCacheEnabled: PtrBool(false)}
+	if tc.CertCacheEnabledValue() != false {
+		t.Error("explicit false CertCacheEnabled must return false")
+	}
+}
+
+// TestConfig_FailModeValue_MonitorNilDefaultsFailOpen verifies nil FailMode
+// in monitor mode defaults to fail_open.
+func TestConfig_FailModeValue_MonitorNilDefaultsFailOpen(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Mode = "monitor"
+	cfg.Agent.FailMode = nil
+	if mode := cfg.Agent.FailModeValue(); mode != "fail_open" {
+		t.Errorf("nil fail_mode in monitor mode must default to fail_open, got %q", mode)
+	}
+}
+
+// TestConfig_FailModeValue_TransparentNilDefaultsFailOpen verifies nil FailMode
+// in transparent mode defaults to fail_open.
+func TestConfig_FailModeValue_TransparentNilDefaultsFailOpen(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Agent.Mode = "transparent"
+	cfg.Agent.FailMode = nil
+	if mode := cfg.Agent.FailModeValue(); mode != "fail_open" {
+		t.Errorf("nil fail_mode in transparent mode must default to fail_open, got %q", mode)
+	}
+}
+
+// TestConfig_MergeFileOverride_StarBoolDistinguishesFalse verifies that
+// MergeFileOverride correctly applies false values for *bool fields (R-024 fix).
+func TestConfig_MergeFileOverride_StarBoolDistinguishesFalse(t *testing.T) {
+	cfg := DefaultConfig()
+	tmpDir := t.TempDir()
+	overridePath := filepath.Join(tmpDir, "override.yaml")
+
+	// Override with pii_logging: false and cert_cache_enabled: false.
+	overrideYAML := `
+logging:
+  pii_logging: false
+tls:
+  cert_cache_enabled: false
+`
+	if err := os.WriteFile(overridePath, []byte(overrideYAML), 0644); err != nil {
+		t.Fatalf("failed to write override: %v", err)
+	}
+
+	if err := cfg.MergeFileOverride(overridePath); err != nil {
+		t.Fatalf("MergeFileOverride failed: %v", err)
+	}
+
+	if cfg.Logging.PIILogging == nil {
+		t.Error("PIILogging should not be nil after override with explicit false")
+	}
+	if *cfg.Logging.PIILogging != false {
+		t.Error("PIILogging should be false after override")
+	}
+	if cfg.TLS.CertCacheEnabled == nil {
+		t.Error("CertCacheEnabled should not be nil after override with explicit false")
+	}
+	if *cfg.TLS.CertCacheEnabled != false {
+		t.Error("CertCacheEnabled should be false after override")
+	}
+}
+
+// TestConfig_MergeFileOverride_StarStringDistinguishesEmpty verifies that
+// MergeFileOverride correctly applies *string overrides (R-024 fix).
+func TestConfig_MergeFileOverride_StarStringDistinguishesEmpty(t *testing.T) {
+	cfg := DefaultConfig()
+	tmpDir := t.TempDir()
+	overridePath := filepath.Join(tmpDir, "override.yaml")
+
+	overrideYAML := `
+agent:
+  fail_mode: "fail_closed"
+`
+	if err := os.WriteFile(overridePath, []byte(overrideYAML), 0644); err != nil {
+		t.Fatalf("failed to write override: %v", err)
+	}
+
+	if err := cfg.MergeFileOverride(overridePath); err != nil {
+		t.Fatalf("MergeFileOverride failed: %v", err)
+	}
+
+	if cfg.Agent.FailMode == nil {
+		t.Error("FailMode should not be nil after override")
+	}
+	if *cfg.Agent.FailMode != "fail_closed" {
+		t.Errorf("FailMode should be 'fail_closed', got %q", *cfg.Agent.FailMode)
 	}
 }

@@ -9,6 +9,13 @@ import (
 	"runtime"
 )
 
+// LookupVaultPathForPort resolves the vault path for a connection.
+// On non-Windows platforms, ignores the port and returns the current user's vault path.
+// srcPort is accepted for API compatibility but is unused on this platform.
+func LookupVaultPathForPort(srcPort uint16, opts ...interface{}) (*ResolvedUser, error) {
+	return LookupVaultPath()
+}
+
 // LookupVaultPath returns the per-user vault directory path.
 // On Linux: $XDG_DATA_HOME/qindu/ or ~/.local/share/qindu/
 // On macOS: ~/Library/Application Support/Qindu/

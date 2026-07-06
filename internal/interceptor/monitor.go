@@ -71,6 +71,13 @@ func NewMonitorInterceptor(engine *pii.Engine, piiLogging bool, logger *slog.Log
 	}, nil
 }
 
+// ShouldProcess returns true if the MonitorInterceptor will scan this path.
+// Delegates to shouldScanPath — the host and method parameters are ignored
+// (MonitorInterceptor is path-based only).
+func (m *MonitorInterceptor) ShouldProcess(host, method, path string) bool {
+	return m.shouldScanPath(path)
+}
+
 // shouldScanPath returns true if the given URL path matches any configured scan path
 // substring (case-insensitive).
 func (m *MonitorInterceptor) shouldScanPath(path string) bool {
@@ -237,18 +244,20 @@ func buildEntitySummary(entities []pii.Entity) map[string]int {
 // Used by MonitorInterceptor, ProviderInterceptor, SSEFrameReader, and ProviderSSEReader
 // to emit identically formatted log entries (PR-101: consolidated from 3 duplicate implementations).
 type MonitorScanArgs struct {
-	Direction     string
-	Result        string
-	BytesAnalyzed int
-	EntityCount   int
-	EntitySummary map[string]int
-	PIILogging    bool
-	SSEFrame      bool
-	Host          string
-	Method        string
-	Path          string
-	StatusCode    int
-	ContentType   string
+	Direction       string
+	Result          string
+	BytesAnalyzed   int
+	EntityCount     int
+	EntitySummary   map[string]int
+	PIILogging      bool
+	SSEFrame        bool
+	Host            string
+	Method          string
+	Path            string
+	StatusCode      int
+	ContentType     string
+	TokenizedCount  int // optional: tokenized count in enforce request path
+	RehydratedCount int // optional: rehydrated count in enforce response path
 }
 
 // emitMonitorScan emits a single monitor_scan structured log entry.
@@ -264,6 +273,14 @@ func emitMonitorScan(logger *slog.Logger, args MonitorScanArgs) {
 
 	if args.SSEFrame {
 		argsSlice = append(argsSlice, "sse_frame", true)
+	}
+
+	if args.TokenizedCount > 0 {
+		argsSlice = append(argsSlice, "tokenized_count", args.TokenizedCount)
+	}
+
+	if args.RehydratedCount > 0 {
+		argsSlice = append(argsSlice, "rehydrated_count", args.RehydratedCount)
 	}
 
 	if args.EntityCount > 0 {
@@ -366,6 +383,14 @@ type bodyScanConfig struct {
 	// extractor returns text segments from body bytes for PII scanning.
 	// nil means scan the full body as a single text blob (MonitorInterceptor mode).
 	extractor func([]byte) []providers.TextSegment
+	// tokenize is an optional callback called after detection on the request path.
+	// It receives segments and returns modified segments (e.g., with tokenized text).
+	// nil means no tokenization (monitor mode behavior).
+	tokenize func([]providers.TextSegment) []providers.TextSegment
+	// rehydrate is an optional callback called on body bytes for the response path.
+	// It receives the rewritten body bytes and returns rehydrated bytes.
+	// nil means no rehydration (monitor mode behavior).
+	rehydrate func([]byte) []byte
 	// rewriter transforms body bytes for forward compatibility (enforce mode).
 	// nil means return body unchanged.
 	rewriter func([]byte, []providers.TextSegment) []byte
@@ -463,8 +488,38 @@ func scanBody(body io.ReadCloser, contentLength int64, cfg bodyScanConfig) ([]pi
 		allEntities = append(allEntities, entities...)
 	}
 
+	// Tokenize segments if a tokenize callback is configured (enforce request path).
+	tokenizedCount := 0
+	if cfg.tokenize != nil && len(segments) > 0 {
+		segments = cfg.tokenize(segments)
+		// Count tokenized segments (those whose Text changed from the original body slice).
+		for _, seg := range segments {
+			if seg.Start < seg.End && seg.End <= len(bodyBytes) {
+				orig := string(bodyBytes[seg.Start:seg.End])
+				if orig != seg.Text {
+					tokenizedCount++
+				}
+			}
+		}
+	}
+
+	// Rewrite body if a rewriter is configured.
+	rewritten := bodyBytes
+	if cfg.rewriter != nil {
+		rewritten = cfg.rewriter(bodyBytes, segments)
+	}
+
+	// Rehydrate body if a rehydrate callback is configured (enforce response path).
+	rehydratedCount := 0
+	if cfg.rehydrate != nil {
+		beforeCount := countTokenPatterns(string(rewritten))
+		rewritten = cfg.rehydrate(rewritten)
+		afterCount := countTokenPatterns(string(rewritten))
+		rehydratedCount = beforeCount - afterCount
+	}
+
 	// Emit monitor_scan log entry (identical format for both interceptors).
-	emitMonitorScan(cfg.logger, MonitorScanArgs{
+	args := MonitorScanArgs{
 		Direction:     cfg.direction,
 		Result:        resultLabel(allEntities),
 		BytesAnalyzed: len(bodyBytes),
@@ -476,13 +531,14 @@ func scanBody(body io.ReadCloser, contentLength int64, cfg bodyScanConfig) ([]pi
 		Path:          cfg.path,
 		StatusCode:    cfg.statusCode,
 		ContentType:   cfg.contentType,
-	})
-
-	// Rewrite body if a rewriter is configured (ProviderInterceptor enforce mode).
-	rewritten := bodyBytes
-	if cfg.rewriter != nil {
-		rewritten = cfg.rewriter(bodyBytes, segments)
 	}
+	if tokenizedCount > 0 {
+		args.TokenizedCount = tokenizedCount
+	}
+	if rehydratedCount > 0 {
+		args.RehydratedCount = rehydratedCount
+	}
+	emitMonitorScan(cfg.logger, args)
 
 	return allEntities, io.NopCloser(bytes.NewReader(rewritten)), nil
 }
@@ -590,4 +646,24 @@ func sanitizeContentTypeForLog(mediaType string) string {
 	}
 	// Already parsed by mime.ParseMediaType — just ensure lowercase.
 	return strings.ToLower(strings.TrimSpace(mediaType))
+}
+
+// countTokenPatterns counts <<TYPE_N>> token patterns in a string.
+// Used by scanBody to compute rehydrated_count for non-streaming responses.
+// Delegates to looksLikeToken (defined in enforce_sse.go, same package) for validation.
+func countTokenPatterns(s string) int {
+	count := 0
+	for i := 0; i < len(s); i++ {
+		if i+4 < len(s) && s[i] == '<' && s[i+1] == '<' {
+			end := strings.Index(s[i:], ">>")
+			if end >= 4 {
+				token := s[i : i+end+2]
+				if looksLikeToken(token) {
+					count++
+				}
+				i += end + 1
+			}
+		}
+	}
+	return count
 }

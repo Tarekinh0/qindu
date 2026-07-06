@@ -1,0 +1,23 @@
+=== BUG: finalize STILL tokenized AFTER path guard fix ===
+
+[20:58:27] chat-requirements/finalize → TOKENIZED → 500
+{"monitor_scan","direction":"request","result":"pii_found","bytes_analyzed":6377,"pii_values_logged":false,"tokenized_count":1,"entity_count":67,"host":"chatgpt.com","method":"POST","path":"/backend-anon/sentinel/chat-requirements/finalize"}
+{"enforce_transform","host":"chatgpt.com","path":"/backend-anon/sentinel/chat-requirements/finalize","detected_count":67,"entity_summary":{"SECRET":67},"body_bytes_in":6377,"body_bytes_out":1448,"pii_values_logged":false}
+{"monitor_scan","direction":"response","result":"clean","bytes_analyzed":34,"status_code":500}
+
+[20:59:50] chat-requirements/finalize → TOKENIZED → 500  
+{"monitor_scan","direction":"request","result":"pii_found","bytes_analyzed":6377,"pii_values_logged":false,"tokenized_count":1,"entity_count":67,"host":"chatgpt.com","method":"POST","path":"/backend-anon/sentinel/chat-requirements/finalize"}
+{"enforce_transform","host":"chatgpt.com","path":"/backend-anon/sentinel/chat-requirements/finalize","detected_count":67,"entity_summary":{"SECRET":67},"body_bytes_in":6377,"body_bytes_out":1448,"pii_values_logged":false}
+{"monitor_scan","direction":"response","result":"clean","bytes_analyzed":34,"status_code":500}
+
+[21:14:45] chat-requirements/finalize → TOKENIZED → 500
+{"monitor_scan","direction":"request","result":"pii_found","bytes_analyzed":6705,"pii_values_logged":false,"tokenized_count":1,"entity_count":72,"host":"chatgpt.com","method":"POST","path":"/backend-anon/sentinel/chat-requirements/finalize"}
+{"enforce_transform","host":"chatgpt.com","path":"/backend-anon/sentinel/chat-requirements/finalize","detected_count":72,"entity_summary":{"SECRET":72},"body_bytes_in":6705,"body_bytes_out":1583,"pii_values_logged":false}
+{"monitor_scan","direction":"response","result":"clean","bytes_analyzed":34,"status_code":500}
+
+=== CONVERSATION: tokenization works correctly ===
+
+[21:30:18] /backend-anon/f/conversation → TOKENIZED → 200
+{"monitor_scan","direction":"request","result":"pii_found","bytes_analyzed":1125,"pii_values_logged":false,"tokenized_count":1,"entity_count":1,"host":"chatgpt.com","method":"POST","path":"/backend-anon/f/conversation"}
+{"enforce_transform","host":"chatgpt.com","path":"/backend-anon/f/conversation","detected_count":1,"entity_summary":{"EMAIL":1},"body_bytes_in":1125,"body_bytes_out":1121,"pii_values_logged":false}
+{"monitor_scan","direction":"response","result":"pii_found","bytes_analyzed":8532,"sse_frame":true,"rehydrated_count":3,"entity_count":2,"status_code":200}

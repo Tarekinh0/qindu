@@ -1,5 +1,39 @@
 # Dev Notes — QINDU-0011
 
+## Fix Cycle 10 (2026-07-06)
+
+Peer review fix round — two small items:
+
+| Issue | Severity | Source | Description | Fix |
+|---|---|---|---|---|
+| **PR-FIX-1** | BLOCKING | Peer | `p.resolveProviderForHost(host)` called in `mitm.go:269` but method not implemented on `Proxy` | Added `resolveProviderForHost(host string) string` method in `proxy.go`. Uses same domain matching logic as `providerDispatcher.selectForHost`: normalizes host via `sanitizeHostForDispatch`, exact match then suffix match (longest domain first), returns provider name or `"unknown"`. |
+| **PR-FIX-2** | SMELL | Peer | Unused `pii` import in `mitm.go` after switch to `p.engine` | Removed `"github.com/Tarekinh0/qindu/internal/pii"` from imports in `mitm.go`. |
+
+### Build & Test Results
+
+```
+go build ./...  → PASS (clean)
+go vet ./...    → PASS (clean)
+go fmt ./...    → PASS (clean)
+go test -race ./... -count=1  → ALL 14 packages PASS — ZERO RACES DETECTED
+```
+
+### Files Modified in Fix Cycle 10
+
+| File | Changes |
+|---|---|
+| `internal/proxy/proxy.go` | Added `resolveProviderForHost()` method — domain-to-provider resolution for enforce mode using `sanitizeHostForDispatch` + exact match + length-descending suffix match |
+| `internal/proxy/mitm.go` | Removed unused `pii` import |
+
+### `resolveProviderForHost` Design Notes
+
+- **Matching logic mirrors `providerDispatcher.selectForHost`**: exact match first, then suffix match sorted by domain length descending (most specific first).
+- **Not cached**: recomputes domain→provider mapping on each call. The domain list is small (a handful of providers with a few domains each), so O(n log n) per call is negligible. Avoids adding another field to the `Proxy` struct.
+- **Skips disabled providers**: only enabled providers with non-empty domain lists are considered.
+- **Default `"unknown"`**: returned for empty host, hosts with NUL/control characters, and hosts not matching any provider domain. The tokenizer uses this as the provider name in metadata — no functional impact for non-provider traffic.
+
+---
+
 ## Fix Cycle 9 (2026-07-05)
 
 Single HIGH issue from the eighth peer review: **PR-001** — `newSessionSafe` returns `nil` on panic despite documenting a no-op session fallback.

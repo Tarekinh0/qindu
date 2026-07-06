@@ -41,8 +41,7 @@ QINDU-0008: Vault local chiffré       ← DONE ✅
 
 ```
 QINDU-0011: Adapter ChatGPT web       ← DONE ✅
-QINDU-0009: Mode Enforce + Réhydratation non-streaming  ← READY (next sprint)
-QINDU-0010: Réhydratation streaming (SSE)
+QINDU-0009: Mode Enforce + Réhydratation (SSE)  ← DONE ✅ (merged 0009+0010)
 QINDU-0012: Adapter Claude web
 QINDU-0013: Gestion historique conversations
 ```
@@ -87,9 +86,8 @@ QINDU-0001 (Proxy)
   │     │     └── QINDU-0008 (Vault) ✅ DONE
   │     └── QINDU-0007 (Mode Monitor)
   ├── QINDU-0011 (ChatGPT adapter) ✅ DONE
-  │     └── QINDU-0009 (Mode Enforce) ← READY — depends on 0007 + 0008 + 0011
-  │           └── QINDU-0010 (Rehyd streaming SSE)
-  │                 ├── QINDU-0012 (Claude adapter)
+  │     └── QINDU-0009 (Mode Enforce + SSE) ✅ DONE — merged 0009+0010
+  │           └── QINDU-0012 (Claude adapter)
   │                 └── QINDU-0014 (Gemini adapter)
   ├── QINDU-0013 (Historique) ← depends on 0009 + 0011 + 0012
   ├── QINDU-0015 (Fail-closed page)
@@ -110,6 +108,6 @@ _None currently._
 1. **M0 - Proxy fonctionnel**: QINDU-0001 done → le proxy tourne, CONNECT, MITM, PAC, logs
 2. **M1 - Installable ✅**: QINDU-0002 + QINDU-0004 done → installation/désinstallation Windows complète, CI verte (0 issues golangci-lint, 5/5 packages test pass)
 3. **M2 - PII Ready ✅**: QINDU-0005 + QINDU-0006 + QINDU-0007 done → détection et tokenisation fonctionnelles, mode monitor avec path whitelisting + per-message logging + MSI uninstall clean
-4. **M3 - MVP Privacy**: QINDU-0008 ✅ + QINDU-0011 ✅ + QINDU-0009 + QINDU-0010 done → flux complet tokenisation → réhydratation, ChatGPT fonctionnel
+4. **M3 - MVP Privacy ✅**: QINDU-0008 ✅ + QINDU-0011 ✅ + QINDU-0009 ✅ done → flux complet tokenisation → réhydratation SSE, ChatGPT fonctionnel
 5. **M4 - Multi-Provider V1**: QINDU-0012 + QINDU-0013 + QINDU-0014 done → ChatGPT, Claude, Gemini supportés avec historique
 6. **M5 - Multi-platform**: QINDU-0018 + QINDU-0019 + QINDU-0021 done → Linux et macOS pleinement supportés avec chiffrement CA, packaging natif, trust stores

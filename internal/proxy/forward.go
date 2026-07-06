@@ -33,10 +33,10 @@ func (cw *countingWriter) Write(p []byte) (int, error) {
 //
 // Pipeline:
 //  1. Read HTTP request from the browser TLS connection
-//  2. Pass through Interceptor.InterceptRequest (NoOp for this sprint)
+//  2. Pass through Interceptor.InterceptRequest
 //  3. Write complete request (headers + body) to upstream via Request.Write
 //  4. Read HTTP response from upstream TLS connection
-//  5. Pass through Interceptor.InterceptResponse (NoOp for this sprint)
+//  5. Pass through Interceptor.InterceptResponse
 //  6. Write complete response (headers + body) to browser via Response.Write
 //
 // IMPORTANT: browserReader and upstreamReader must be created ONCE and reused
@@ -54,15 +54,32 @@ func forwardRequestAndResponse(
 	interceptor Interceptor,
 	stats *forwardStats,
 ) (int, error) {
-	var err error
-
-	// 1. Read request from browser (reuse reader to preserve buffered bytes)
 	req, err := http.ReadRequest(browserReader)
 	if err != nil {
 		return 0, fmt.Errorf("reading request from browser: %w", err)
 	}
+	return forwardHTTPRoundTrip(req, browserWriter, upstreamReader, upstreamWriter, interceptor, stats)
+}
 
-	// 2. Intercept request (NoOp passes through)
+// forwardHTTPRoundTrip processes a single HTTP request-response cycle after the
+// request has been read. It handles the full interceptor pipeline:
+//
+//	InterceptRequest → Write to upstream → Read response → InterceptResponse → Write to browser
+//
+// PR-003: Extracted shared logic to eliminate duplication between
+// forwardRequestAndResponse (monitor/transparent) and the enforce-mode path
+// (which injects a tokenizer into the request context before calling this).
+func forwardHTTPRoundTrip(
+	req *http.Request,
+	browserWriter io.Writer,
+	upstreamReader *bufio.Reader,
+	upstreamWriter io.Writer,
+	interceptor Interceptor,
+	stats *forwardStats,
+) (int, error) {
+	var err error
+
+	// 1. Intercept request (tokenize in enforce mode, NoOp in monitor/transparent).
 	var modifiedReq *http.Request
 	var reqBody io.ReadCloser
 	modifiedReq, reqBody, err = interceptor.InterceptRequest(req)
@@ -73,21 +90,20 @@ func forwardRequestAndResponse(
 		modifiedReq.Body = reqBody
 	}
 
-	// 3. Write complete request (headers + body) to upstream, counting bytes.
-	// The countingWriter captures actual bytes written including chunked encoding.
+	// 2. Write complete request (headers + body) to upstream, counting bytes.
 	upWriter := &countingWriter{w: upstreamWriter, counted: &stats.bytesIn}
 	if err = modifiedReq.Write(upWriter); err != nil {
 		return 0, fmt.Errorf("writing request to upstream: %w", err)
 	}
 
-	// 4. Read response from upstream (reuse reader to preserve buffered bytes)
+	// 3. Read response from upstream (reuse reader to preserve buffered bytes).
 	var resp *http.Response
 	resp, err = http.ReadResponse(upstreamReader, modifiedReq)
 	if err != nil {
 		return 0, fmt.Errorf("reading response from upstream: %w", err)
 	}
 
-	// 5. Intercept response (NoOp passes through)
+	// 4. Intercept response (rehydrate in enforce mode, NoOp in monitor/transparent).
 	var modifiedResp *http.Response
 	var respBody io.ReadCloser
 	modifiedResp, respBody, err = interceptor.InterceptResponse(resp)
@@ -98,7 +114,7 @@ func forwardRequestAndResponse(
 		modifiedResp.Body = respBody
 	}
 
-	// 6. Write complete response (headers + body) to browser, counting bytes.
+	// 5. Write complete response (headers + body) to browser, counting bytes.
 	bw := &countingWriter{w: browserWriter, counted: &stats.bytesOut}
 	if err = modifiedResp.Write(bw); err != nil {
 		return modifiedResp.StatusCode, fmt.Errorf("writing response to browser: %w", err)

@@ -6,9 +6,13 @@ import (
 	"crypto/x509"
 	"io"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/Tarekinh0/qindu/internal/logging"
+	"github.com/Tarekinh0/qindu/internal/session"
+	"github.com/Tarekinh0/qindu/internal/tokenize"
+	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // handleMITM establishes a Man-in-the-Middle TLS connection for AI domain traffic.
@@ -117,22 +121,122 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 	}
 	defer func() { _ = upstreamConn.Close() }()
 
-	// 4. Forward HTTP requests through the interceptor pipeline
+	// 4. Enforce mode: resolve user SID, create per-user vault, and prepare for tokenizer injection.
+	// Only wired for enforce mode — monitor/transparent skip this entirely.
+	var userVault *vault.Vault // non-nil only for enforce mode
+	if p.config.Agent.Mode == "enforce" {
+		if p.vaultManager == nil {
+			p.logger.Error("enforce mode requires a VaultManager",
+				"pii_values_logged", false,
+			)
+			p.sendBadGateway(browserConn)
+			logging.LogConnection(p.logger, logging.ConnectionLogEntry{
+				Timestamp:  logging.NowUTC(),
+				Host:       host,
+				Status:     502,
+				DurationMs: logging.DurationMs(startTime),
+				BytesIn:    stats.bytesIn.Load(),
+				BytesOut:   stats.bytesOut.Load(),
+				Mode:       "mitm",
+			})
+			return
+		}
+
+		// Resolve the user from the TCP connection (SID on Windows, current user on Unix).
+		localPort := uint16(clientConn.LocalAddr().(*net.TCPAddr).Port)
+		resolved, err := session.LookupVaultPathForPort(localPort)
+		if err != nil {
+			p.logger.Error("enforce: SID resolution failed, rejecting connection (fail-closed)",
+				"error", "user resolution failed",
+				"pii_values_logged", false,
+			)
+			p.sendBadGateway(browserConn)
+			logging.LogConnection(p.logger, logging.ConnectionLogEntry{
+				Timestamp:  logging.NowUTC(),
+				Host:       host,
+				Status:     502,
+				DurationMs: logging.DurationMs(startTime),
+				BytesIn:    stats.bytesIn.Load(),
+				BytesOut:   stats.bytesOut.Load(),
+				Mode:       "mitm",
+			})
+			return
+		}
+
+		// Create or reuse per-user vault (fail-closed: 502 on error).
+		userVault, err = p.vaultManager.GetOrCreate(resolved, 0)
+		if err != nil {
+			p.logger.Error("enforce: vault creation failed, rejecting connection (fail-closed)",
+				"error", "vault initialization failed",
+				"pii_values_logged", false,
+			)
+			p.sendBadGateway(browserConn)
+			logging.LogConnection(p.logger, logging.ConnectionLogEntry{
+				Timestamp:  logging.NowUTC(),
+				Host:       host,
+				Status:     502,
+				DurationMs: logging.DurationMs(startTime),
+				BytesIn:    stats.bytesIn.Load(),
+				BytesOut:   stats.bytesOut.Load(),
+				Mode:       "mitm",
+			})
+			return
+		}
+	}
+
+	// 5. Forward HTTP requests through the interceptor pipeline
 	// Handle multiple requests on the same connection (HTTP keep-alive)
 	// Create buffered readers ONCE to avoid discarding bytes between iterations.
 	browserReader := bufio.NewReader(browserConn)
 	upstreamReader := bufio.NewReader(upstreamConn)
 	lastStatus := 200
 	for {
-		status, fwdErr := forwardRequestAndResponse(browserReader, browserConn, upstreamReader, upstreamConn, p.interceptor, stats)
-		if fwdErr != nil {
-			if fwdErr != io.EOF {
+		// 5.1 Read request from browser (shared for all modes).
+		req, err := http.ReadRequest(browserReader)
+		if err != nil {
+			if err != io.EOF {
 				p.logger.Debug("forward error",
 					"host", host,
-					"error", fwdErr,
+					"error", err,
 				)
 			}
-			// Capture the status from the failed request when available
+			break
+		}
+
+		// 5.2 Enforce mode: derive conversation ID, create per-request tokenizer,
+		// inject into request context. Then delegate to shared forwarding helper.
+		var status int
+		var fwdErr error
+
+		if p.config.Agent.Mode == "enforce" {
+			var convID string
+			if req.URL != nil {
+				convID = deriveConversationID(req.URL.Path)
+			} else {
+				convID = deriveConversationID("")
+			}
+			providerName := p.resolveProviderForHost(host)
+
+			tokenizer := tokenize.New(p.engine,
+				tokenize.WithPersister(userVault),
+				tokenize.WithProvider(providerName),
+				tokenize.WithConversationID(convID),
+				tokenize.WithLogger(p.logger),
+			)
+			ctx := tokenize.ContextWithTokenizer(req.Context(), tokenizer)
+			req = req.WithContext(ctx)
+
+			status, fwdErr = forwardHTTPRoundTrip(req, browserConn, upstreamReader, upstreamConn, p.interceptor, stats)
+			_ = tokenizer.Close() // explicit close in loop — defers accumulate (PR-003)
+		} else {
+			status, fwdErr = forwardHTTPRoundTrip(req, browserConn, upstreamReader, upstreamConn, p.interceptor, stats)
+		}
+
+		if fwdErr != nil {
+			p.logger.Debug("forward error",
+				"host", host,
+				"error", fwdErr,
+			)
 			if status != 0 {
 				lastStatus = status
 			}
@@ -140,7 +244,6 @@ func (p *Proxy) handleMITM(clientConn net.Conn, host, port string) {
 		}
 
 		lastStatus = status
-		// Only log connection metrics (no bodies, no headers)
 		p.logger.Debug("request processed",
 			"host", host,
 			"status", status,

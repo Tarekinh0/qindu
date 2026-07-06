@@ -51,6 +51,18 @@ type ProviderPlugin interface {
 	NewSession() ProviderPluginSession
 }
 
+// ResponseTextExtractor is an optional interface for provider plugins
+// that support surgical text extraction from response bodies.
+// If a plugin does not implement this, the interceptor falls back to
+// extractAllStringValues (conservative but safe).
+type ResponseTextExtractor interface {
+	// ExtractResponseText returns text segments from a response body.
+	// The returned segments identify user-content byte ranges for surgical
+	// rehydration — only these ranges are rehydrated, not metadata fields.
+	// Returns nil or empty slice for metadata-only responses.
+	ExtractResponseText(body []byte) []TextSegment
+}
+
 // ProviderPluginSession handles SSE events for a single HTTP response stream.
 // The session holds per-stream state (e.g., JSON Patch document tree for ChatGPT)
 // and is discarded when the stream ends ([DONE], EOF, or error).

@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
@@ -52,7 +51,7 @@ func TestNewProxy_EnforceModeFatal(t *testing.T) {
 			CAName:             "Test CA",
 			CAValidityYears:    10,
 			CAKeyAlgorithm:     "ECDSA_P256",
-			CertCacheEnabled:   true,
+			CertCacheEnabled:   policy.PtrBool(true),
 			UpstreamValidation: "system",
 		},
 		Providers: make(policy.ProvidersConfig),
@@ -62,13 +61,13 @@ func TestNewProxy_EnforceModeFatal(t *testing.T) {
 		},
 	}
 
-	_, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
-	if err == nil {
-		t.Fatal("expected error for enforce mode, got nil")
+	p, err := NewProxy(cfg, ca, certCache, nil, logger, "0.1.0-test")
+	if err != nil {
+		// Enforce mode is now implemented — it should succeed.
+		t.Fatalf("unexpected error for enforce mode: %v", err)
 	}
-	// Verify the error message mentions enforce mode.
-	if !bytes.Contains([]byte(err.Error()), []byte("enforce")) {
-		t.Errorf("error should mention 'enforce', got: %s", err.Error())
+	if p == nil {
+		t.Fatal("expected non-nil proxy for enforce mode")
 	}
 }
 
@@ -87,7 +86,7 @@ func TestNewProxy_TransparentMode(t *testing.T) {
 			CAName:             "Test CA",
 			CAValidityYears:    10,
 			CAKeyAlgorithm:     "ECDSA_P256",
-			CertCacheEnabled:   true,
+			CertCacheEnabled:   policy.PtrBool(true),
 			UpstreamValidation: "system",
 		},
 		Providers: make(policy.ProvidersConfig),
@@ -97,7 +96,7 @@ func TestNewProxy_TransparentMode(t *testing.T) {
 		},
 	}
 
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
+	p, err := NewProxy(cfg, ca, certCache, nil, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error for transparent mode: %v", err)
 	}
@@ -124,7 +123,7 @@ func TestNewProxy_MonitorMode(t *testing.T) {
 			CAName:             "Test CA",
 			CAValidityYears:    10,
 			CAKeyAlgorithm:     "ECDSA_P256",
-			CertCacheEnabled:   true,
+			CertCacheEnabled:   policy.PtrBool(true),
 			UpstreamValidation: "system",
 		},
 		Providers: make(policy.ProvidersConfig),
@@ -134,7 +133,7 @@ func TestNewProxy_MonitorMode(t *testing.T) {
 		},
 	}
 
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
+	p, err := NewProxy(cfg, ca, certCache, nil, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error for monitor mode: %v", err)
 	}
@@ -154,7 +153,7 @@ func TestNewProxy_DefaultConfigIsValid(t *testing.T) {
 	// Set log format to make it simpler.
 	cfg.Logging.Format = "text"
 
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
+	p, err := NewProxy(cfg, ca, certCache, nil, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error for default config (monitor mode): %v", err)
 	}
@@ -174,7 +173,7 @@ func TestNewProxy_StartTimeIsSet(t *testing.T) {
 	cfg.Logging.Format = "text"
 
 	before := time.Now()
-	p, err := NewProxy(cfg, ca, certCache, logger, "0.1.0-test")
+	p, err := NewProxy(cfg, ca, certCache, nil, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -343,6 +342,10 @@ func (r *recordingInterceptor) InterceptResponse(resp *http.Response) (*http.Res
 	return resp, resp.Body, nil
 }
 
+func (r *recordingInterceptor) ShouldProcess(host, method, path string) bool {
+	return true // recording interceptor processes everything for test observation
+}
+
 // TestBuildProviderRegistry verifies that buildProviderRegistry correctly
 // creates ProviderInterceptors for enabled providers with domains, skips
 // disabled providers, normalizes domain names, and handles unknown providers.
@@ -361,7 +364,7 @@ func TestBuildProviderRegistry(t *testing.T) {
 					Domains: []string{"chatgpt.com", "chat.openai.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 
 		registry := buildProviderRegistry(cfg, engine, logger)
@@ -384,7 +387,7 @@ func TestBuildProviderRegistry(t *testing.T) {
 					Domains: []string{"chatgpt.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 
 		registry := buildProviderRegistry(cfg, engine, logger)
@@ -401,7 +404,7 @@ func TestBuildProviderRegistry(t *testing.T) {
 					Domains: []string{"example.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 
 		registry := buildProviderRegistry(cfg, engine, logger)
@@ -418,7 +421,7 @@ func TestBuildProviderRegistry(t *testing.T) {
 					Domains: []string{"  ChatGPT.COM  ", "chat.openai.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 
 		registry := buildProviderRegistry(cfg, engine, logger)
@@ -438,7 +441,7 @@ func TestBuildProviderRegistry(t *testing.T) {
 					Domains: []string{"  ", "", "chatgpt.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 
 		registry := buildProviderRegistry(cfg, engine, logger)
@@ -462,7 +465,7 @@ func TestBuildProviderRegistry(t *testing.T) {
 					Domains: []string{"example.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 
 		// Only chatgpt has a registered plugin; nonexistent should be skipped.
@@ -485,7 +488,7 @@ func TestHasEnabledProviders(t *testing.T) {
 					Domains: []string{"chatgpt.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 		if !hasEnabledProviders(cfg, logger) {
 			t.Error("expected hasEnabledProviders to return true for enabled chatgpt")
@@ -500,7 +503,7 @@ func TestHasEnabledProviders(t *testing.T) {
 					Domains: []string{"chatgpt.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 		if hasEnabledProviders(cfg, logger) {
 			t.Error("expected hasEnabledProviders to return false for disabled chatgpt")
@@ -510,7 +513,7 @@ func TestHasEnabledProviders(t *testing.T) {
 	t.Run("empty providers config", func(t *testing.T) {
 		cfg := &policy.Config{
 			Providers: policy.ProvidersConfig{},
-			Logging:   policy.LoggingConfig{PIILogging: false},
+			Logging:   policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 		if hasEnabledProviders(cfg, logger) {
 			t.Error("expected hasEnabledProviders to return false for empty providers")
@@ -530,7 +533,7 @@ func TestEnabledProviderNames(t *testing.T) {
 					Domains: []string{"chatgpt.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 		names := enabledProviderNames(cfg, logger)
 		if len(names) != 1 || names[0] != "chatgpt" {
@@ -546,11 +549,428 @@ func TestEnabledProviderNames(t *testing.T) {
 					Domains: []string{"chatgpt.com"},
 				},
 			},
-			Logging: policy.LoggingConfig{PIILogging: false},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
 		}
 		names := enabledProviderNames(cfg, logger)
 		if len(names) != 0 {
 			t.Errorf("expected empty list, got %v", names)
+		}
+	})
+}
+
+// =============================================================================
+// buildEnforceRegistry Unit Tests (QA-required: AC-2, DD-7)
+// =============================================================================
+
+func TestBuildEnforceRegistry(t *testing.T) {
+	engine := pii.NewEngine(pii.DefaultMaxInputBytes,
+		pii.NewEmailRecognizer(),
+		pii.NewPhoneRecognizer(),
+	)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	t.Run("enabled provider with valid plugin creates entry", func(t *testing.T) {
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{
+				"chatgpt": {
+					Enabled: true,
+					Domains: []string{"chatgpt.com", "chat.openai.com"},
+				},
+			},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		if len(registry) != 2 {
+			t.Fatalf("expected 2 domain entries, got %d", len(registry))
+		}
+		if _, ok := registry["chatgpt.com"]; !ok {
+			t.Error("expected registry to contain chatgpt.com")
+		}
+		if _, ok := registry["chat.openai.com"]; !ok {
+			t.Error("expected registry to contain chat.openai.com")
+		}
+
+		// Verify the interceptor is an *EnforceInterceptor (not nil or wrong type).
+		ic := registry["chatgpt.com"]
+		if ic == nil {
+			t.Fatal("interceptor for chatgpt.com must not be nil")
+		}
+	})
+
+	t.Run("disabled provider is skipped", func(t *testing.T) {
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{
+				"chatgpt": {
+					Enabled: false,
+					Domains: []string{"chatgpt.com"},
+				},
+			},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		if len(registry) != 0 {
+			t.Fatalf("expected 0 entries for disabled provider, got %d", len(registry))
+		}
+	})
+
+	t.Run("unknown provider name is skipped gracefully", func(t *testing.T) {
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{
+				"nonexistent-provider-xyz": {
+					Enabled: true,
+					Domains: []string{"example.com"},
+				},
+			},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		// Must not panic.
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		if len(registry) != 0 {
+			t.Fatalf("expected 0 entries for unknown provider, got %d", len(registry))
+		}
+	})
+
+	t.Run("multiple providers with distinct domains", func(t *testing.T) {
+		// chatgpt is the only registered provider; a second provider
+		// that doesn't exist in the plugin registry is skipped.
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{
+				"chatgpt": {
+					Enabled: true,
+					Domains: []string{"chatgpt.com"},
+				},
+				"nonexistent": {
+					Enabled: true,
+					Domains: []string{"example.com"},
+				},
+			},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		// Only chatgpt entries should exist; nonexistent is skipped.
+		if _, ok := registry["chatgpt.com"]; !ok {
+			t.Error("expected chatgpt.com entry")
+		}
+		if _, ok := registry["example.com"]; ok {
+			t.Error("example.com should be skipped (no registered plugin)")
+		}
+	})
+
+	t.Run("domain conflict — last write wins", func(t *testing.T) {
+		// Same domain listed for the same provider twice — last write wins.
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{
+				"chatgpt": {
+					Enabled: true,
+					Domains: []string{"chatgpt.com", "chatgpt.com"},
+				},
+			},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		if len(registry) != 1 {
+			t.Fatalf("expected 1 domain entry (deduped), got %d", len(registry))
+		}
+		if _, ok := registry["chatgpt.com"]; !ok {
+			t.Error("expected chatgpt.com")
+		}
+	})
+
+	t.Run("empty domain list produces no entries", func(t *testing.T) {
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{
+				"chatgpt": {
+					Enabled: true,
+					Domains: []string{},
+				},
+			},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		if len(registry) != 0 {
+			t.Fatalf("expected 0 entries for empty domain list, got %d", len(registry))
+		}
+	})
+
+	t.Run("no providers configured produces empty registry", func(t *testing.T) {
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{},
+			Logging:   policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		if len(registry) != 0 {
+			t.Fatalf("expected 0 entries for no providers, got %d", len(registry))
+		}
+	})
+
+	t.Run("domain names are normalized", func(t *testing.T) {
+		cfg := &policy.Config{
+			Providers: policy.ProvidersConfig{
+				"chatgpt": {
+					Enabled: true,
+					Domains: []string{"  ChatGPT.COM  "},
+				},
+			},
+			Logging: policy.LoggingConfig{PIILogging: policy.PtrBool(false)},
+		}
+
+		registry := buildEnforceRegistry(cfg, engine, logger)
+		if _, ok := registry["chatgpt.com"]; !ok {
+			t.Error("expected normalized domain 'chatgpt.com' in registry")
+		}
+		if _, ok := registry["ChatGPT.COM"]; ok {
+			t.Error("un-normalized domain should not be in registry")
+		}
+	})
+}
+
+// =============================================================================
+// resolveProviderForHost Unit Tests (QA-required: AC-3, DD-5)
+// =============================================================================
+
+// helperNewTestProxy creates a minimal Proxy for resolveProviderForHost tests.
+func helperNewTestProxy(providers policy.ProvidersConfig) *Proxy {
+	p := &Proxy{
+		config: &policy.Config{
+			Providers: providers,
+		},
+	}
+	p.buildProviderCache()
+	return p
+}
+
+func TestResolveProviderForHost(t *testing.T) {
+	t.Run("exact host match returns correct provider", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"chatgpt.com"},
+			},
+			"claude": {
+				Enabled: true,
+				Domains: []string{"claude.ai"},
+			},
+		})
+
+		if got := p.resolveProviderForHost("chatgpt.com"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt', got %q", got)
+		}
+		if got := p.resolveProviderForHost("claude.ai"); got != "claude" {
+			t.Errorf("expected 'claude', got %q", got)
+		}
+	})
+
+	t.Run("subdomain suffix match returns correct provider", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"chatgpt.com"},
+			},
+		})
+
+		if got := p.resolveProviderForHost("sub.chatgpt.com"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt', got %q", got)
+		}
+		if got := p.resolveProviderForHost("deep.sub.chatgpt.com"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt', got %q", got)
+		}
+	})
+
+	t.Run("most-specific domain wins", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"chatgpt.com", "openai.com", "api.openai.com"},
+			},
+		})
+
+		// api.openai.com should match api.openai.com first, not openai.com.
+		if got := p.resolveProviderForHost("api.openai.com"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt' via api.openai.com, got %q", got)
+		}
+		// sub.openai.com should match openai.com (since api.openai.com is too specific).
+		if got := p.resolveProviderForHost("sub.openai.com"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt' via openai.com suffix, got %q", got)
+		}
+	})
+
+	t.Run("no match returns unknown", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"chatgpt.com"},
+			},
+		})
+
+		if got := p.resolveProviderForHost("unknown.com"); got != "unknown" {
+			t.Errorf("expected 'unknown', got %q", got)
+		}
+		if got := p.resolveProviderForHost("google.com"); got != "unknown" {
+			t.Errorf("expected 'unknown', got %q", got)
+		}
+	})
+
+	t.Run("host with port stripped and matched", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"chatgpt.com"},
+			},
+		})
+
+		if got := p.resolveProviderForHost("chatgpt.com:443"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt', got %q", got)
+		}
+		if got := p.resolveProviderForHost("chatgpt.com:8080"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt', got %q", got)
+		}
+	})
+
+	t.Run("empty host returns unknown", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"chatgpt.com"},
+			},
+		})
+
+		if got := p.resolveProviderForHost(""); got != "unknown" {
+			t.Errorf("expected 'unknown' for empty host, got %q", got)
+		}
+	})
+
+	t.Run("disabled provider does not match", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: false,
+				Domains: []string{"chatgpt.com"},
+			},
+		})
+
+		if got := p.resolveProviderForHost("chatgpt.com"); got != "unknown" {
+			t.Errorf("expected 'unknown' for disabled provider, got %q", got)
+		}
+	})
+
+	t.Run("case insensitive match", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"ChatGPT.com"},
+			},
+		})
+
+		if got := p.resolveProviderForHost("chatgpt.com"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt', got %q", got)
+		}
+		if got := p.resolveProviderForHost("CHATGPT.COM"); got != "chatgpt" {
+			t.Errorf("expected 'chatgpt', got %q", got)
+		}
+	})
+
+	t.Run("no providers configured returns unknown", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{})
+
+		if got := p.resolveProviderForHost("chatgpt.com"); got != "unknown" {
+			t.Errorf("expected 'unknown' with no providers, got %q", got)
+		}
+	})
+}
+
+// TestBuildProviderCache verifies the PR-003 cache is built correctly:
+// enabled providers populate the map and sorted domain list, disabled
+// providers are excluded, and the sort order is correct.
+func TestBuildProviderCache(t *testing.T) {
+	t.Run("enabled providers populate cache", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"chatgpt.com", "api.openai.com"},
+			},
+			"claude": {
+				Enabled: true,
+				Domains: []string{"claude.ai"},
+			},
+		})
+
+		// Verify map entries.
+		if p.providerByDomain["chatgpt.com"] != "chatgpt" {
+			t.Error("expected chatgpt.com → chatgpt in cache map")
+		}
+		if p.providerByDomain["api.openai.com"] != "chatgpt" {
+			t.Error("expected api.openai.com → chatgpt in cache map")
+		}
+		if p.providerByDomain["claude.ai"] != "claude" {
+			t.Error("expected claude.ai → claude in cache map")
+		}
+
+		// Verify sorted slice is length-descending.
+		if len(p.providerSortedDomains) != 3 {
+			t.Fatalf("expected 3 sorted domains, got %d", len(p.providerSortedDomains))
+		}
+		for i := 1; i < len(p.providerSortedDomains); i++ {
+			if len(p.providerSortedDomains[i-1].domain) < len(p.providerSortedDomains[i].domain) {
+				t.Errorf("sorted domains not in descending length order: %q (%d) before %q (%d)",
+					p.providerSortedDomains[i-1].domain, len(p.providerSortedDomains[i-1].domain),
+					p.providerSortedDomains[i].domain, len(p.providerSortedDomains[i].domain))
+			}
+		}
+	})
+
+	t.Run("disabled providers excluded from cache", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: false,
+				Domains: []string{"chatgpt.com"},
+			},
+			"claude": {
+				Enabled: true,
+				Domains: []string{"claude.ai"},
+			},
+		})
+
+		if _, ok := p.providerByDomain["chatgpt.com"]; ok {
+			t.Error("disabled provider domain should not be in cache")
+		}
+		if p.providerByDomain["claude.ai"] != "claude" {
+			t.Error("expected claude.ai → claude in cache")
+		}
+		if len(p.providerSortedDomains) != 1 {
+			t.Errorf("expected 1 sorted domain for enabled provider, got %d", len(p.providerSortedDomains))
+		}
+	})
+
+	t.Run("empty domains excluded", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{
+			"chatgpt": {
+				Enabled: true,
+				Domains: []string{"  ", "", "chatgpt.com"},
+			},
+		})
+
+		if len(p.providerByDomain) != 1 {
+			t.Errorf("expected 1 domain in cache (empty excluded), got %d", len(p.providerByDomain))
+		}
+		if _, ok := p.providerByDomain["chatgpt.com"]; !ok {
+			t.Error("expected chatgpt.com in cache")
+		}
+	})
+
+	t.Run("no providers yields empty cache", func(t *testing.T) {
+		p := helperNewTestProxy(policy.ProvidersConfig{})
+
+		if len(p.providerByDomain) != 0 {
+			t.Errorf("expected empty cache, got %d entries", len(p.providerByDomain))
+		}
+		if len(p.providerSortedDomains) != 0 {
+			t.Errorf("expected empty sorted list, got %d entries", len(p.providerSortedDomains))
 		}
 	})
 }

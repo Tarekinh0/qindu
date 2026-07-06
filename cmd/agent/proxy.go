@@ -12,6 +12,7 @@ import (
 	"github.com/Tarekinh0/qindu/internal/proxy"
 	"github.com/Tarekinh0/qindu/internal/service"
 	qinduTls "github.com/Tarekinh0/qindu/internal/tls"
+	"github.com/Tarekinh0/qindu/internal/vault"
 )
 
 // =============================================================================
@@ -55,8 +56,44 @@ func runProxy(explicitConfigPath string, forceConsole bool) int {
 	// Initialize certificate cache
 	certCache := qinduTls.NewCertCache()
 
+	// Parse vault TTL from config (defaults to 168h).
+	vaultTTL, err := cfg.Agent.Vault.ParseTTL()
+	if err != nil {
+		logger.Error("failed to parse vault TTL", "error", err)
+		return 1
+	}
+	if vaultTTL == 0 {
+		logger.Warn("vault TTL set to 0 (infinite) — PII token mappings will never expire",
+			"pii_values_logged", false,
+		)
+	}
+
+	// Create the VaultManager for per-user vault storage.
+	// Only used in enforce mode; passed as nil-safe to NewProxy.
+	vaultManager := vault.NewVaultManager(vaultTTL, vault.DefaultIdleTimeout, logger)
+	defer vaultManager.Shutdown()
+
+	// SeImpersonatePrivilege warning (SR-CISO-12, R-033).
+	// On Windows enforce mode, per-user vault isolation requires the service account
+	// to hold SeImpersonatePrivilege. If revoked by GPO, all enforce connections
+	// will be rejected with 502 (fail-closed, no PII leakage).
+	// TODO: Add runtime detection of SeImpersonatePrivilege via OpenProcessToken +
+	// LookupPrivilegeValue. Currently log a blanket warning on Windows enforce mode.
+	if cfg.Agent.Mode == "enforce" {
+		logger.Warn("enforce mode: per-user vault isolation requires SeImpersonatePrivilege — if absent, all enforce connections will be rejected (fail-closed, pii_values_logged=false)",
+			"pii_values_logged", false,
+		)
+	}
+
+	// If pii_logging is explicitly enabled, warn the operator.
+	if cfg.Logging.PIILogging != nil && *cfg.Logging.PIILogging {
+		logger.Info("pii_logging is enabled — entity type counts will appear in monitor_scan logs. PII values are never logged.",
+			"pii_values_logged", false,
+		)
+	}
+
 	// Create the proxy.
-	proxyHandler, err := proxy.NewProxy(cfg, ca, certCache, logger, appVersion)
+	proxyHandler, err := proxy.NewProxy(cfg, ca, certCache, vaultManager, logger, appVersion)
 	if err != nil {
 		logger.Error("failed to create proxy", "error", err)
 		return 1

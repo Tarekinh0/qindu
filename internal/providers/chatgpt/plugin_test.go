@@ -567,3 +567,204 @@ func TestTestFixtures_NoRealPII(t *testing.T) {
 	// No test should contain real credit card numbers.
 	// Our tests use phone numbers like +1-555-0100 (555 prefix = reserved fictional).
 }
+
+// =============================================================================
+// ExtractResponseText Tests (QA-required: AC-4, DD-11)
+// =============================================================================
+
+func TestChatGPTPlugin_ExtractResponseText_ValidResponse(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	// Synthetic ChatGPT response with message.content.parts[].
+	// Based on real format from chatgpt.com.har ground truth.
+	body := []byte(`{
+		"message": {
+			"id": "abc-123",
+			"author": {"role": "assistant"},
+			"content": {
+				"content_type": "text",
+				"parts": ["Hello! Your email is test.user@example.com. How can I help?"]
+			},
+			"status": "finished_successfully"
+		},
+		"conversation_id": "conv-456"
+	}`)
+
+	segments := plugin.ExtractResponseText(body)
+	if len(segments) == 0 {
+		t.Fatal("expected at least 1 text segment from valid response")
+	}
+
+	found := false
+	for _, seg := range segments {
+		if strings.Contains(seg.Text, "test.user@example.com") {
+			found = true
+			if seg.Start < 0 || seg.End > len(body) || seg.Start > seg.End {
+				t.Errorf("invalid offsets: start=%d end=%d", seg.Start, seg.End)
+			}
+		}
+		if seg.Text == "" {
+			t.Error("empty text in segment")
+		}
+	}
+	if !found {
+		t.Error("did not find email in extracted response text segments")
+	}
+}
+
+func TestChatGPTPlugin_ExtractResponseText_MetadataOnlyResponse(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	// Metadata-only response with nil message (prepare/sentinel type).
+	body := []byte(`{
+		"conversation_id": "conv-123",
+		"message": null,
+		"error": null
+	}`)
+
+	segments := plugin.ExtractResponseText(body)
+	if len(segments) != 0 {
+		t.Errorf("expected 0 segments for metadata-only response (nil message), got %d", len(segments))
+	}
+}
+
+func TestChatGPTPlugin_ExtractResponseText_MissingMessage(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	// Response with no message field at all.
+	body := []byte(`{"conversation_id": "conv-789"}`)
+
+	segments := plugin.ExtractResponseText(body)
+	if len(segments) != 0 {
+		t.Errorf("expected 0 segments for response without message field, got %d", len(segments))
+	}
+}
+
+func TestChatGPTPlugin_ExtractResponseText_EmptyParts(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	body := []byte(`{"message": {"id": "x", "content": {"content_type": "text", "parts": []}}}`)
+	segments := plugin.ExtractResponseText(body)
+	if len(segments) != 0 {
+		t.Errorf("expected 0 segments for empty parts, got %d", len(segments))
+	}
+}
+
+func TestChatGPTPlugin_ExtractResponseText_InvalidJSON(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	body := []byte(`not json at all {{{`)
+	segments := plugin.ExtractResponseText(body)
+	if len(segments) != 0 {
+		t.Errorf("expected 0 segments for invalid JSON, got %d", len(segments))
+	}
+}
+
+func TestChatGPTPlugin_ExtractResponseText_EmptyBody(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	// Empty body — should not panic.
+	segments := plugin.ExtractResponseText([]byte{})
+	if len(segments) != 0 {
+		t.Errorf("expected 0 segments for empty body, got %d", len(segments))
+	}
+
+	// Nil-like empty body.
+	segments = plugin.ExtractResponseText(nil)
+	if len(segments) != 0 {
+		t.Errorf("expected 0 segments for nil body, got %d", len(segments))
+	}
+}
+
+func TestChatGPTPlugin_ExtractResponseText_SegmentsReferenceAssistantReply(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	// Response where metadata fields contain strings that look like text
+	// but are NOT in message.content.parts. Segments must only reference
+	// the assistant reply content, not metadata.
+	body := []byte(`{
+		"message": {
+			"id": "msg-123",
+			"author": {"role": "assistant", "name": "auto"},
+			"content": {
+				"content_type": "text",
+				"parts": ["Your account was updated successfully."]
+			},
+			"status": "finished_successfully"
+		},
+		"conversation_id": "conv-456",
+		"error": null
+	}`)
+
+	segments := plugin.ExtractResponseText(body)
+	if len(segments) == 0 {
+		t.Fatal("expected at least 1 segment")
+	}
+
+	// The only text segment should be from the parts array.
+	for _, seg := range segments {
+		segBytes := body[seg.Start:seg.End]
+		if string(segBytes) != seg.Text {
+			t.Errorf("segment bytes don't match: body[start:end]=%q, seg.Text=%q",
+				string(segBytes), seg.Text)
+		}
+	}
+
+	// Ensure we found the assistant reply text, not metadata.
+	foundReply := false
+	for _, seg := range segments {
+		if strings.Contains(seg.Text, "Your account was updated successfully") {
+			foundReply = true
+		}
+	}
+	if !foundReply {
+		t.Error("did not find assistant reply in segments")
+	}
+
+	// Verify metadata strings like "assistant", "auto", "finished_successfully"
+	// are NOT extracted (they are not in content.parts).
+	for _, seg := range segments {
+		if strings.Contains(seg.Text, "\"assistant\"") || strings.Contains(seg.Text, "\"auto\"") ||
+			strings.Contains(seg.Text, "finished_successfully") {
+			t.Errorf("metadata value leaked into segment: %q", seg.Text)
+		}
+	}
+}
+
+func TestChatGPTPlugin_ExtractResponseText_MultipleParts(t *testing.T) {
+	var logBuf bytes.Buffer
+	plugin := NewChatGPTPlugin(testLogger(&logBuf))
+
+	body := []byte(`{
+		"message": {
+			"content": {
+				"parts": [
+					"First assistant paragraph.",
+					"Second paragraph with phone +1-555-0100."
+				]
+			}
+		}
+	}`)
+
+	segments := plugin.ExtractResponseText(body)
+	if len(segments) < 2 {
+		t.Fatalf("expected at least 2 segments for multiple parts, got %d", len(segments))
+	}
+
+	foundPhone := false
+	for _, seg := range segments {
+		if strings.Contains(seg.Text, "+1-555-0100") {
+			foundPhone = true
+		}
+	}
+	if !foundPhone {
+		t.Error("did not find phone in segments from second part")
+	}
+}

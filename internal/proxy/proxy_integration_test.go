@@ -69,7 +69,7 @@ func newTestHarness(t *testing.T, aiDomains []string) *testHarness {
 			CAName:             "Test CA",
 			CAValidityYears:    10,
 			CAKeyAlgorithm:     "ECDSA_P256",
-			CertCacheEnabled:   true,
+			CertCacheEnabled:   policy.PtrBool(true),
 			UpstreamValidation: "system",
 		},
 		Providers: make(policy.ProvidersConfig),
@@ -87,7 +87,7 @@ func newTestHarness(t *testing.T, aiDomains []string) *testHarness {
 	// 5. Create proxy with visible logger for debugging
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	h.proxy, err = NewProxy(cfg, ca, h.certCache, logger, "0.1.0-test")
+	h.proxy, err = NewProxy(cfg, ca, h.certCache, nil, logger, "0.1.0-test")
 	if err != nil {
 		t.Fatalf("failed to create proxy: %v", err)
 	}
