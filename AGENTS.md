@@ -81,11 +81,21 @@ Receives: `story.md` + git diff. Nothing else.
 
 **Blank-slate rule**: Invoked as a fresh, independent session each time. Receives ONLY `story.md` + git diff + existing `qemu-test-report.md` (factual VM findings from prior iterations). No `dev-notes.md`, no `dpo-requirements.md`, no `ciso-requirements.md`, no prior `peer-review.md`.
 
-#### qindu-qemu-tester — VM Integration Reviewer
+#### qindu-qemu-tester — VM & API Integration Reviewer
 
-Validates on real Windows QEMU VM — install, uninstall, service, proxy, TLS, and story compliance via SSH. Cannot modify code.
+Validates Qindu end-to-end: deploys the MSI to the Windows QEMU VM and tests the full proxy pipeline with real API calls. Cannot modify code.
 
-Receives: `story.md` + MSI artifact + test instructions. Nothing else.
+Two validation modes:
+
+1. **QEMU VM**: Install, uninstall, service, proxy, TLS trust store, PAC, firewall, story compliance — via SSH.
+2. **API Integration** (from QINDU-0009 onward): Sends real prompts through the proxy to AI providers, verifying:
+   - Tokenization: PII replaced with tokens in outbound request
+   - Vault: token→value mapping persisted and retrievable
+   - Rehydration: tokens replaced with original PII in response
+   - Log sanitization: zero PII values in any log output
+   - Round-trip: the full enforce pipeline works end-to-end
+
+Receives: `story.md` + MSI artifact + test instructions. API key from `.ssh/openai.key`. Nothing else.
 
 ---
 
@@ -124,9 +134,11 @@ The workflow is strictly sequential and file-based within the sprint folder (`do
    - If BLOCKED by either, the sprint returns to step 3.
    - On fix iterations, validators also read `qemu-test-report.md` from the prior cycle.
 
-7. **VM Integration Test**:
+7. **VM & API Integration Test**:
    - `qindu-qemu-tester` deploys the MSI to the Windows QEMU VM, runs smoke tests, edge cases, and uninstall verification.
+   - **From QINDU-0009 onward**: Also validates the full enforce pipeline with real AI provider calls (tokenization, vault persistence, rehydration, log sanitization).
    - Writes `qemu-test-report.md` with verdict PASS or BLOCKED.
+   - Uses API key from `.ssh/openai.key` for provider calls.
    - If BLOCKED, returns to step 3 and re-enters the full pipeline (steps 3→4→5→6→7).
 
 8. **Closure**:

@@ -73,7 +73,7 @@
       "temperature": 0.1
     },
     "qindu-qemu-tester": {
-      "description": "Valide Qindu sur VM Windows QEMU. Vérifie installation, désinstallation, service, proxy, TLS et conformité story via SSH.",
+      "description": "Valide Qindu end-to-end: VM Windows QEMU (install, désinstall, service, proxy, TLS, PAC) + API integration (prompts réels, tokenisation, vault, réhydratation, logs).",
       "mode": "subagent",
       "temperature": 0.1
     }
