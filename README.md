@@ -142,17 +142,82 @@ Built in **Go** — single static binary, no runtime, native TLS/HTTP. Cryptogra
 
 ---
 
-## Quick start
+## Windows installation
+
+### Prerequisites
+- Windows 10 or 11 (x64)
+- Chrome or Edge browser
+- Administrator rights (one-time, for MSI install)
+
+### Install
+
+Download the latest MSI from [GitHub Releases](https://github.com/Tarekinh0/qindu/releases) and run:
+
+```powershell
+msiexec /i Qindu-Installer-x64.msi /qn /l*v install.log
+```
+
+The installer handles everything automatically:
+- Installs `agent.exe` to `C:\Program Files\Qindu\`
+- Registers and starts the `QinduAgent` Windows service
+- Generates a local ECDSA P-256 CA, DPAPI-encrypted at `C:\ProgramData\Qindu\`
+- Installs the CA in the Windows Trusted Root store
+- Configures Chrome and Edge to route AI traffic through the proxy
+- Binds the proxy to `127.0.0.1:8787` (loopback only)
+- Blocks external connections in Windows Firewall
+
+### Verify
+
+```powershell
+# Check the service is running
+sc query QinduAgent
+
+# Health check
+curl http://127.0.0.1:8787/health
+# → {"status":"up","version":"0.1.0"}
+
+# Inspect the PAC file
+curl http://127.0.0.1:8787/proxy.pac
+```
+
+### Configure
+
+Override `configs/default.yaml` by dropping a `config.yaml` in `C:\ProgramData\Qindu\`:
+
+```yaml
+agent:
+  mode: "enforce"            # "monitor" or "enforce"
+  fail_mode: "fail_closed"   # "fail_closed" or "fail_open"
+logging:
+  level: "debug"
+  output: "file"
+providers:
+  chatgpt:
+    enabled: true
+```
+
+Restart the service to apply:
+
+```powershell
+sc stop QinduAgent
+sc start QinduAgent
+```
+
+### Uninstall
+
+```powershell
+msiexec /x Qindu-Installer-x64.msi DELETEDATA=1 /qn /l*v uninstall.log
+```
+
+With `DELETEDATA=1`, the CA certificate, vault, and all configuration are removed. Without it, the vault and CA material are preserved for reinstallation.
+
+---
+
+## Development
 
 ```bash
-# Build
-go build ./cmd/agent/
-
-# Run (console mode)
-./agent -config configs/default.yaml
-
-# Test
-go test -race ./...
+go build ./cmd/agent/        # Build
+go test -race ./...          # Test
 ```
 
 ---
