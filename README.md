@@ -96,13 +96,14 @@ Qindu only decrypts traffic to AI providers. Every other domain passes through a
 
 ### PII protection
 - **Detection engine** — regex, validators (Luhn), context-aware. Covers: email, phone, IBAN, credit card, API key, JWT. Configurable confidence threshold.
-- **Tokenization** — `<⟨PII_TYPE_ID>>` format, deterministic (same value → same token within a conversation)
+- **Tokenization** — `<⟨PII_TYPE_ID>>` format, deterministic (same value → same token within a session). Provider-scoped: each AI service gets independent tokens. Conversation-aware: tokens are scoped by conversation ID, so the same email in two different chats gets two different tokens.
 - **DPAPI-encrypted vault** — token→value mapping, scoped by provider and conversation, configurable TTL (24h / 7d / infinite)
 - **Streaming rehydration** — SSE responses rehydrated on the fly, sub-4KB sliding buffer, no added latency
 
 ### Modes
 - **Monitor** — detect and log what would be tokenized, traffic passes through unmodified
-- **Enforce** — tokenize before upstream, rehydrate before browser. The AI sees only tokens.
+- **Enforce** — tokenize before upstream, rehydrate before browser. The AI sees only tokens. Fail-closed: if the vault or tokenizer is unavailable, the request is blocked (502) rather than sent in the clear.
+- **Flow Inspector** — feature-flagged (`debug.flow_inspector: true`), localhost-only ring buffer at `/debug/flow`. Captures ingress/egress body pairs (64KB cap per entry, 50 entries max) for verifying the enforce pipeline. Only records conversation endpoints — sentinel/challenge paths are skipped. Zero PII in logs.
 
 ### Providers
 - **ChatGPT** (`chatgpt.com`) — conversation endpoint, streaming SSE, delta encoding v1
@@ -125,11 +126,13 @@ cmd/agent/main.go              Single binary entry point
 
 internal/
   proxy/                       HTTP/S proxy (CONNECT MITM, blind tunnel, interceptor pipeline)
+  interceptor/                 Pipeline stages: debug (flow inspector), enforce (tokenize/rehydrate), monitor
   tls/                         CA, leaf certs, cert cache, trust store
   policy/                      YAML config, domain router, PAC generator
   pii/                         Detection engine (recognizers, validators)
   tokenize/                    Token replacement (deterministic, reversible)
   vault/                       DPAPI-encrypted token→value store
+  session/                     Conversation ID resolution, token scoping
   logging/                     PII-free structured JSON logging
   service/                     Windows service handler, health endpoint
   providers/                   Per-provider adapters (chatgpt, claude, gemini)
